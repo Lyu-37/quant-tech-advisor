@@ -1,0 +1,36 @@
+# Example portfolio config — copy to portfolio.yaml and fill in your holdings.
+# portfolio.yaml is gitignored (never committed). This example IS committed.
+# All values in your base currency (CAD/USD). TSX tickers need .TO suffix.
+
+currency: CAD
+
+# Risk appetite: conservative / balanced / aggressive
+# aggressive = looser risk thresholds + lighter vol penalty; high-momentum
+# high-vol names won't auto-trigger 减仓; moonshots ride longer.
+risk_appetite: balanced
+
+# Your holdings
+holdings:
+  - ticker: AAPL
+    shares: 10
+    cost_basis: 2000.00       # total invested in base currency
+    sector: mega_tech
+    note: ""
+  - ticker: NVDA
+    shares: 5
+    cost_basis: 800.00
+    sector: semiconductor
+    note: ""
+
+# Pullback watchlist: stocks to buy ON A DIP to support.
+# buy_zone: "sma50" (default) or "sma200"
+watchlist:
+  - ticker: SMH
+    buy_zone: sma50
+    note: "semiconductor ETF, buy on pullback to SMA50"
+
+# Focus question for the analysis run (free text, informational)
+focus:
+  question: "Is there a good entry in semiconductors?"
+  primary_concern: NVDA
+  decision_mode: state_report

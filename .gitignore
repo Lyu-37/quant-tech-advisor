@@ -19,7 +19,8 @@ results/sector_reports/
 # personal financial data — never commit
 configs/portfolio.yaml
 configs/portfolio.*.yaml
-!configs/portfolio.example.yaml   # but DO commit the example template
+# but DO commit the example template (negation must come after the rule above)
+!configs/portfolio.example.yaml
 
 # generated wrappers contain the real Discord webhook URL — never commit
 scripts/_run_*.cmd
