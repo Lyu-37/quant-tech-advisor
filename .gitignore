@@ -1,0 +1,36 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# data caches and outputs
+data/raw/*.parquet
+results/*.png
+results/*.parquet
+results/sector_reports/
+!results/.gitkeep
+!data/raw/.gitkeep
+
+# personal financial data — never commit
+configs/portfolio.yaml
+configs/portfolio.*.yaml
+!configs/portfolio.example.yaml   # but DO commit the example template
+
+# generated wrappers contain the real Discord webhook URL — never commit
+scripts/_run_*.cmd
+
+# daily state snapshots contain personal position history
+data/state/
+results/deploy_advisor/
+
+# logs
+logs/
+
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,14 @@
+# Default backtest config.
+# These parameters are textbook defaults, NOT optimized.
+# Any optimization must use walk-forward analysis (see CLAUDE.md).
+
+ticker: "SPY"
+start:  "2010-01-01"
+end:    "2024-12-31"
+
+short: 20   # fast MA window (trading days)
+long:  60   # slow MA window (trading days)
+
+# Transaction costs (bps = basis points; 1 bp = 0.01%)
+commission_bps: 5.0
+slippage_bps:   2.0
