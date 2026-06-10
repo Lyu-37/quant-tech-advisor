@@ -346,10 +346,18 @@ def main():
     # Per-trade risk budget = live portfolio value x risk%, drives
     # stop-distance-based sizing (falls back to fixed table if unavailable).
     risk_pct = float(adv_config.get("sizing.risk_pct_per_trade", 0.01))
-    risk_dollars = total_value * risk_pct if total_value > 0 else None
+    # Equity base: live mark of holdings; falls back to the user-stated
+    # account_equity_cad while share counts are unfilled (shares: 0).
+    equity_base = total_value if total_value > 0 else float(
+        cfg.get("account_equity_cad", 0) or 0)
+    risk_dollars = equity_base * risk_pct if equity_base > 0 else None
+    unfilled = [h.ticker for h in holdings if h.shares <= 0]
+    if unfilled:
+        print(f"      [!] portfolio.yaml 股数未填: {', '.join(unfilled)} — "
+              "盈亏/组合权重不可用, 风险预算用 account_equity_cad 估计")
     print(f"      risk appetite: {risk_appetite}"
           + (f", 单笔风险预算 ${risk_dollars:.0f} CAD"
-             f" (组合市值 ${total_value:.0f} × {risk_pct:.0%})" if risk_dollars else ""))
+             f" (权益基数 ${equity_base:.0f} × {risk_pct:.0%})" if risk_dollars else ""))
     if risk_dollars and risk_dollars > 50:
         # The budget is derived from portfolio.yaml share counts x live
         # prices. If it looks too big, the share counts are probably stale —

@@ -16,7 +16,8 @@ import yfinance as yf
 # to avoid yfinance's noisy HTTP 404 logs on stderr.
 NON_EARNINGS_SYMBOLS = {
     "SMH", "SOXX", "SOXL", "QQQ", "QQQE", "XLK", "TQQQ", "TECL", "SPY",
-    "VDY.TO", "^TNX", "^VIX", "^VIX3M", "DX-Y.NYB",
+    "VDY.TO", "VFV.TO", "QQQX", "XQQ.TO", "ZQQ.TO", "QQC.TO",
+    "^TNX", "^VIX", "^VIX3M", "DX-Y.NYB",
 }
 
 

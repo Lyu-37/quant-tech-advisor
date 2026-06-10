@@ -64,6 +64,8 @@ def compute_daily_pnl(
     out = []
 
     for h in holdings:
+        if h.shares <= 0:
+            continue          # share count unfilled — no meaningful P&L
         df = data.get(h.ticker)
         if df is None or df.empty or len(df) < 2:
             continue

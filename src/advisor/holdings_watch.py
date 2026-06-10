@@ -18,7 +18,7 @@ from .universe import Holding
 class HoldingAlert:
     ticker: str
     current: float
-    pnl_pct: float
+    pnl_pct: float | None          # None when cost basis unfilled (shares: 0)
     dist_sma50: float | None
     dist_sma200: float | None
     stop_tight: float | None       # current - 2×ATR
@@ -55,7 +55,7 @@ def evaluate_holdings(holdings: list[Holding],
 
         out.append(HoldingAlert(
             ticker=h.ticker, current=current,
-            pnl_pct=h.pnl_pct,
+            pnl_pct=h.pnl_pct if h.cost_basis > 0 else None,
             dist_sma50=None if d50 is None or pd.isna(d50) else float(d50),
             dist_sma200=None if d200 is None or pd.isna(d200) else float(d200),
             stop_tight=L.stop_tight if L else None,
@@ -79,9 +79,10 @@ def render_holdings_watch(alerts: list[HoldingAlert]) -> str:
         d50 = f"{a.dist_sma50 * 100:+.1f}%" if a.dist_sma50 is not None else "—"
         d200 = f"{a.dist_sma200 * 100:+.1f}%" if a.dist_sma200 is not None else "—"
         stop = f"${a.stop_tight:.2f}" if a.stop_tight else "—"
+        pnl = f"{a.pnl_pct * 100:+.1f}%" if a.pnl_pct is not None else "— (待填股数)"
         status = "**[触发]**" if a.triggered else "正常"
         lines.append(f"| **{a.ticker}** | ${a.current:.2f} "
-                     f"| {a.pnl_pct * 100:+.1f}% | {d50} | {d200} "
+                     f"| {pnl} | {d50} | {d200} "
                      f"| {stop} | {status} |")
     fired = [a for a in alerts if a.triggered]
     if fired:
