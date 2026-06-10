@@ -27,6 +27,7 @@ import pandas as pd
 import yaml
 
 from . import config
+from .universe import is_cad_listed
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TRADES_PATH = PROJECT_ROOT / "configs" / "trades.yaml"
@@ -120,7 +121,7 @@ def _mark_positions(trades: list[Trade], data: dict[str, pd.DataFrame],
             # No mark available — carry at cost (P&L 0) rather than guessing
             open_positions.append((ticker, shares, cost))
             continue
-        fx = 1.0 if ticker.endswith(".TO") else usd_cad
+        fx = 1.0 if is_cad_listed(ticker) else usd_cad
         mark_cad = float(df["close"].iloc[-1]) * fx
         unrealized += shares * (mark_cad - cost)
         open_positions.append((ticker, shares, cost))

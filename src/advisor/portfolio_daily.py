@@ -15,7 +15,7 @@ import io
 import pandas as pd
 import yfinance as yf
 
-from .universe import Holding
+from .universe import Holding, is_cad_listed
 
 
 # Fallback FX if yfinance is unavailable (rough but stable)
@@ -74,8 +74,8 @@ def compute_daily_pnl(
         prev_close = float(df["close"].iloc[-2])
         today_pct = (today_close / prev_close - 1) if prev_close > 0 else 0.0
 
-        # Native currency
-        currency = "CAD" if h.ticker.endswith(".TO") else "USD"
+        # Native currency (covers TSX .TO and Cboe-Canada CDRs .NE)
+        currency = "CAD" if is_cad_listed(h.ticker) else "USD"
         fx = 1.0 if currency == "CAD" else usd_cad
 
         current_value_native = today_close * h.shares

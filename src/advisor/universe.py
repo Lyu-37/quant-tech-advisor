@@ -180,6 +180,16 @@ def categorize_hot_tech(ticker: str) -> str:
     return "Other"
 
 
+CAD_LISTED_SUFFIXES = (".TO", ".NE", ".V", ".CN")
+
+
+def is_cad_listed(ticker: str) -> bool:
+    """CAD-denominated listings: TSX (.TO), Cboe Canada / NEO (.NE — where
+    Wealthsimple's CDRs live, e.g. BRK.NE, MSFT.NE), TSXV (.V), CSE (.CN).
+    Everything else is treated as USD for FX conversion."""
+    return ticker.upper().endswith(CAD_LISTED_SUFFIXES)
+
+
 @dataclass
 class Holding:
     ticker: str

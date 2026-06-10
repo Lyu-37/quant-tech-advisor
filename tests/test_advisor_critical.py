@@ -509,28 +509,37 @@ def test_config_profiles_respected():
 
 def test_circuit_breaker_trips_and_holds():
     from src.advisor.ledger import evaluate_speculation_sleeve, Trade
+    from src.advisor import config
     from datetime import timedelta
-    # 预算 150, 买 10 股 @ $10 USD, 现价 $5.5 -> 浮亏 62 CAD (-41%) -> 熔断
-    trades = [Trade(date=date(2026, 6, 1), ticker="IONQ", side="buy",
-                    shares=10.0, price=10.0, currency="USD")]
-    data = {"IONQ": flat_df(5.5)}
-    st = evaluate_speculation_sleeve(data, usd_cad=1.38, as_of=date(2026, 6, 9),
-                                     trades=trades, state={}, persist=False)
-    assert st.breaker_active, f"权益 {st.equity:.0f} 距高水位回撤未触发熔断"
-    assert st.breaker_until == date(2026, 6, 9) + timedelta(days=28)
+    # 测试自己钉住参数 — 不依赖 advisor.yaml 里的实际预算值
+    with config.override({"breaker": {"speculation_budget_cad": 150,
+                                      "drawdown_pct": 0.25,
+                                      "cooldown_days": 28}}):
+        # 预算 150, 买 10 股 @ $10 USD, 现价 $5.5 -> 浮亏 62 CAD (-41%) -> 熔断
+        trades = [Trade(date=date(2026, 6, 1), ticker="IONQ", side="buy",
+                        shares=10.0, price=10.0, currency="USD")]
+        data = {"IONQ": flat_df(5.5)}
+        st = evaluate_speculation_sleeve(data, usd_cad=1.38,
+                                         as_of=date(2026, 6, 9),
+                                         trades=trades, state={}, persist=False)
+        assert st.breaker_active, f"权益 {st.equity:.0f} 距高水位回撤未触发熔断"
+        assert st.breaker_until == date(2026, 6, 9) + timedelta(days=28)
 
-    # 浮亏 ~-21% (< 25% 阈值): 不熔断
-    data_ok = {"IONQ": flat_df(7.75)}
-    st2 = evaluate_speculation_sleeve(data_ok, usd_cad=1.38, as_of=date(2026, 6, 9),
-                                      trades=trades, state={}, persist=False)
-    assert not st2.breaker_active
+        # 浮亏 ~-21% (< 25% 阈值): 不熔断
+        data_ok = {"IONQ": flat_df(7.75)}
+        st2 = evaluate_speculation_sleeve(data_ok, usd_cad=1.38,
+                                          as_of=date(2026, 6, 9),
+                                          trades=trades, state={}, persist=False)
+        assert not st2.breaker_active
 
-    # 冷却期已过: 解除
-    st3 = evaluate_speculation_sleeve(data_ok, usd_cad=1.38, as_of=date(2026, 8, 1),
-                                      trades=trades,
-                                      state={"hwm": 150.0, "until": "2026-07-08"},
-                                      persist=False)
-    assert not st3.breaker_active
+        # 冷却期已过: 解除
+        st3 = evaluate_speculation_sleeve(data_ok, usd_cad=1.38,
+                                          as_of=date(2026, 8, 1),
+                                          trades=trades,
+                                          state={"hwm": 150.0,
+                                                 "until": "2026-07-08"},
+                                          persist=False)
+        assert not st3.breaker_active
 
 
 def test_breaker_fifo_realized_pnl():

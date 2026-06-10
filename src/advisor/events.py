@@ -17,6 +17,7 @@ import yfinance as yf
 NON_EARNINGS_SYMBOLS = {
     "SMH", "SOXX", "SOXL", "QQQ", "QQQE", "XLK", "TQQQ", "TECL", "SPY",
     "VDY.TO", "VFV.TO", "QQQX", "XQQ.TO", "ZQQ.TO", "QQC.TO",
+    "BRK.NE", "MSFT.NE", "AMD.NE", "GOOG.NE",
     "^TNX", "^VIX", "^VIX3M", "DX-Y.NYB",
 }
 

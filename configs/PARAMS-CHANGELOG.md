@@ -26,3 +26,9 @@
 - 属用户风险偏好选择而非系统阈值, 未走 shadow 流程; 效果可在每周 eval 报告的 bucket 构成变化里观察。
 - 同日: portfolio.yaml 股数按 06-08 截图市值 / 06-08 收盘价重建 (原数据偏差 8x-20x 且互不一致);
   重建后组合 ~$1074 CAD 与截图 $1106 吻合。AMD 是否已按 planned_trades 卖出待用户确认。
+
+## 2026-06-10 (深夜) — breaker.speculation_budget_cad: 150 -> 255
+
+- 对齐实际已投入投机资本: IONQ 期初合并仓 3.088 股 x $58.91 USD ≈ 253.6 CAD (Wealthsimple 截图反推)。
+- 同日发现并修正: 用户旧持仓的 BRK/MSFT 实为 Cboe Canada CDR (.NE, CAD 计价) 而非美股 —
+  系统全链路 (市值/台账/日PnL) 的 CAD 判定从 ".TO" 扩展为 is_cad_listed (.TO/.NE/.V/.CN)。

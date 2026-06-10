@@ -152,6 +152,7 @@ def main():
     # Market values from LIVE data (close × shares × FX) — replaces the old
     # hardcoded "from screenshot" dict that froze portfolio values in May.
     from src.advisor.portfolio_daily import _fetch_usd_cad
+    from src.advisor.universe import is_cad_listed
     usd_cad = _fetch_usd_cad()
     for h in holdings:
         df = data.get(h.ticker)
@@ -159,7 +160,7 @@ def main():
             h.set_market_value(0.0)
             continue
         px = float(df["close"].iloc[-1])
-        fx = 1.0 if h.ticker.endswith(".TO") else usd_cad
+        fx = 1.0 if is_cad_listed(h.ticker) else usd_cad
         h.set_market_value(px * h.shares * fx)
 
     # ------- buy suppression: fail-closed data quality + circuit breaker ----
