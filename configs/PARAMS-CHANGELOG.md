@@ -32,3 +32,11 @@
 - 对齐实际已投入投机资本: IONQ 期初合并仓 3.088 股 x $58.91 USD ≈ 253.6 CAD (Wealthsimple 截图反推)。
 - 同日发现并修正: 用户旧持仓的 BRK/MSFT 实为 Cboe Canada CDR (.NE, CAD 计价) 而非美股 —
   系统全链路 (市值/台账/日PnL) 的 CAD 判定从 ".TO" 扩展为 is_cad_listed (.TO/.NE/.V/.CN)。
+
+## 2026-06-10 (12:50) — breaker.speculation_budget_cad: 255 -> 415; 持仓按 TFSA 实况重建
+
+- 用户更正: 之前的转入 robo 截图是旧照片。TFSA 实况 (11:36 截图): IONQ 5.088 / VDY 4.8037 /
+  VFV 8.4826 / QQQX 15.8586, 组合 ~$3000 CAD。BRK.NE/MSFT.NE 已不持有, 移除。
+- IONQ 加仓 lot2 (2.0 股, 价格估算) 入台账; 投机资本 ~415 CAD, 熔断基数对齐。
+- account_equity_cad 800 -> 3000。VFV/QQQX/IONQ 的 cost_basis 为估算值, 待用户提供
+  各持仓 all-time return 后校正。

@@ -25,6 +25,17 @@ class HoldingAlert:
     triggered: list[str]           # fired exit conditions, empty = healthy
 
 
+# Buy-and-hold core sleeves (broad ETFs / income CEFs) should NOT be managed
+# with trader stops — SMA50/ATR alerts on a core S&P position are churn bait.
+# They keep only the SMA200 long-trend line. Matched on the yaml sector tag.
+CORE_SECTOR_HINTS = ("etf", "core", "cef", "dividend", "index")
+
+
+def _is_core(sector: str) -> bool:
+    s = (sector or "").lower()
+    return any(k in s for k in CORE_SECTOR_HINTS)
+
+
 def evaluate_holdings(holdings: list[Holding],
                       data: dict[str, pd.DataFrame]) -> list[HoldingAlert]:
     out = []
@@ -37,16 +48,18 @@ def evaluate_holdings(holdings: list[Holding],
         d50 = distance_to_ma(close, 50)
         d200 = distance_to_ma(close, 200) if len(close) >= 200 else None
         L = compute_levels(close, h.ticker)
+        core = _is_core(h.sector)
 
         triggered = []
-        if d50 is not None and not pd.isna(d50) and d50 < 0:
+        if not core and d50 is not None and not pd.isna(d50) and d50 < 0:
             triggered.append(f"跌破 SMA50 ({d50 * 100:+.1f}%) — 趋势止损检查: "
-                             "核心仓考虑减 1/3, 投机仓执行止损")
+                             "投机仓执行止损纪律")
         if d200 is not None and not pd.isna(d200) and d200 < 0:
-            triggered.append(f"跌破 SMA200 ({d200 * 100:+.1f}%) — 长期趋势失效, "
-                             "这是最后一道线")
-        # 5 日内击穿 2×ATR 紧止损位 (从 5 日前的价格算)
-        if L is not None and len(close) >= 6:
+            note = ("长期趋势失效 — 核心仓也该看一眼的最后一道线" if core
+                    else "长期趋势失效, 这是最后一道线")
+            triggered.append(f"跌破 SMA200 ({d200 * 100:+.1f}%) — {note}")
+        # 5 日内击穿 2×ATR 紧止损位 (从 5 日前的价格算) — 仅投机仓
+        if not core and L is not None and len(close) >= 6:
             ref = float(close.iloc[-6])
             atr_stop = ref - 2 * L.atr_proxy
             if current < atr_stop:

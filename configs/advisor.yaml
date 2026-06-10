@@ -40,8 +40,9 @@ sizing:
 
 # ---- 账户级熔断 (investing sleeve circuit breaker) ----
 breaker:
-  # 2026-06-10: 150 -> 255, 对齐实际已投入投机资本 (IONQ 合并仓 ~253.6 CAD)
-  speculation_budget_cad: 255   # 投机桶基准资金
+  # 2026-06-10: 150 -> 255 -> 415, 对齐实际投机资本 (IONQ 5.088 股,
+  # lot1 181.9 USD + lot2 ~115.6 USD ≈ 297.5 USD ≈ 415 CAD)
+  speculation_budget_cad: 415   # 投机桶基准资金
   drawdown_pct: 0.25            # 桶权益距高水位 -25% -> 熔断
   cooldown_days: 28             # 熔断后暂停新买入的天数
 
