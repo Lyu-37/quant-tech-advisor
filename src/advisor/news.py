@@ -19,14 +19,18 @@ import json
 import yfinance as yf
 
 
-# Finance-loaded lexicon — biased to headline language, not general English
+# Finance-loaded lexicon — biased to headline language, not general English.
+# Deliberately EXCLUDED from POS: "ai" (this universe is AI stocks — every
+# headline mentions it, it carried zero signal and skewed everything
+# positive), "high" ("inflation high", "rates high"), "demand", "growth"
+# ("growth slows"). Directional words only.
 POS_WORDS = {
     "beat", "beats", "surge", "surges", "rally", "rallies", "soar", "soars",
     "jump", "jumps", "upgrade", "upgraded", "raises", "boost", "boosted",
-    "outperform", "outperforms", "strong", "robust", "record", "high",
-    "breakthrough", "growth", "expansion", "approval", "approved",
+    "outperform", "outperforms", "strong", "robust", "record",
+    "breakthrough", "expansion", "approval", "approved",
     "wins", "win", "partnership", "deal", "contract", "bullish", "buy",
-    "ai", "demand", "guidance raised", "raised guidance", "tops",
+    "guidance raised", "raised guidance", "tops",
     "exceeds", "exceed", "above estimates", "beat estimates",
 }
 NEG_WORDS = {
@@ -37,6 +41,8 @@ NEG_WORDS = {
     "lawsuit", "investigation", "probe", "fraud", "scandal", "bearish",
     "sell", "short", "risk", "risks", "fears", "below estimates",
     "guidance cut", "cut guidance", "layoff", "layoffs", "loss", "losses",
+    "slows", "slowdown", "delay", "delays", "delayed", "halt", "halts",
+    "recall", "recalls",
 }
 
 
@@ -301,9 +307,9 @@ def fetch_ticker_news(ticker: str, max_age_days: int = 7,
             elif isinstance(pub, str):
                 pub_dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
             else:
-                pub_dt = datetime.now(timezone.utc)
+                continue   # undated news must NOT masquerade as fresh
         except (ValueError, TypeError):
-            pub_dt = datetime.now(timezone.utc)
+            continue
         if pub_dt < cutoff:
             continue
 

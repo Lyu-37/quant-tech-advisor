@@ -9,6 +9,7 @@ high-frequency "news" that justifies checking every day. Separates:
   - Significant unusual moves (>2 sigma)
 """
 from dataclasses import dataclass, field
+from datetime import date
 import pandas as pd
 
 from .universe import HOT_TECH, categorize_hot_tech
@@ -40,14 +41,22 @@ class MarketMovers:
 
 
 def compute_today_movers(data: dict[str, pd.DataFrame],
-                          min_sigma: float = 2.0) -> MarketMovers:
-    """Scan all HOT_TECH tickers for today's biggest moves + level breaks."""
+                          min_sigma: float = 2.0,
+                          as_of: date | None = None) -> MarketMovers:
+    """Scan all HOT_TECH tickers for today's biggest moves + level breaks.
+
+    `as_of`: the run's data-as-of date. Tickers whose last bar is older
+    (halted / lagging feed) are skipped — their iloc[-1] move belongs to an
+    older session and must not appear in a "today" list.
+    """
     result = MarketMovers()
 
     all_moves = []
     for t in HOT_TECH:
         df = data.get(t)
         if df is None or df.empty or len(df) < 51:
+            continue
+        if as_of is not None and df.index[-1].date() < as_of:
             continue
         today = float(df["close"].iloc[-1])
         prev = float(df["close"].iloc[-2])
@@ -94,13 +103,16 @@ def compute_today_movers(data: dict[str, pd.DataFrame],
                     ticker=t, kind="跌破 SMA200 ★", price=today, category=cat
                 ))
 
-        # 52w high/low
+        # 52w high/low — a NEW high means today's close exceeds the PRIOR
+        # 252d max (the old "within 0.1% of the max" also fired when price
+        # merely came close to an old high).
         if len(df) >= 252:
-            high_52w = float(df["close"].tail(252).max())
-            low_52w = float(df["close"].tail(252).min())
-            if abs(today - high_52w) / high_52w < 0.001:  # within 0.1% of 52w high
+            window = df["close"].tail(252)
+            prior_high = float(window.iloc[:-1].max())
+            prior_low = float(window.iloc[:-1].min())
+            if today > prior_high:
                 result.new_52w_highs.append(t)
-            elif abs(today - low_52w) / low_52w < 0.001:
+            elif today < prior_low:
                 result.new_52w_lows.append(t)
 
     # Sort gainers / losers

@@ -57,6 +57,7 @@ $Wrapper = Join-Path $ProjectRoot "scripts\_run_daily_brief.cmd"
 @echo off
 setlocal
 set "DISCORD_WEBHOOK_URL=$WebhookUrl"
+set "PYTHONIOENCODING=utf-8"
 cd /d "$ProjectRoot"
 "$PythonExe" "$Script" 1>> "$LogDir\daily_brief.out.log" 2>> "$LogDir\daily_brief.err.log"
 exit /b %ERRORLEVEL%
@@ -72,7 +73,7 @@ $Settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -WakeToRun `
     -RunOnlyIfNetworkAvailable `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
 # Remove existing if present (so re-running this script updates the task)

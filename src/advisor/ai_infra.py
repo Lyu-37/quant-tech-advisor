@@ -142,7 +142,7 @@ def render_ai_infra_section(report: AIInfraReport) -> str:
         elif h.pnl_pct < -0.10:
             lines.append("- GEV 浮亏 >10%, 但仓位小, 不急止损; 看趋势是否破 SMA200")
         else:
-            lines.append(f"- GEV 当前 P/L {h.pnl_pct * 100:+.2f}%, 持仓占比 ~9%, 可继续持有")
+            lines.append(f"- GEV 当前 P/L {h.pnl_pct * 100:+.2f}%, 可继续持有")
             lines.append("- 触发减仓: GEV 跌破 SMA50 或 AI 基建评分跌破 35")
     lines.append("")
     return "\n".join(lines)

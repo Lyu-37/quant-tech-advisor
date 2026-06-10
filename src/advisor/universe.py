@@ -33,7 +33,7 @@ AI_INFRA_LEADERS = [
 #   - Laggard: INTC (kept as a sentiment check)
 SEMI_LEADERS = [
     "NVDA", "AMD", "AVGO", "TSM", "MU",
-    "AMAT", "LRCX", "KLA", "ASML", "INTC",
+    "AMAT", "LRCX", "KLAC", "ASML", "INTC",   # KLA Corp 代码是 KLAC (不是 KLA)
 ]
 
 # Macro context. yfinance symbols:
@@ -72,7 +72,7 @@ QUANTUM_LEADERS = [
 ROBOTICS_LEADERS = [
     "ISRG",  # Intuitive Surgical — surgical robots
     "TER",   # Teradyne — test + collaborative robots
-    "ABB",   # ABB Ltd — industrial automation
+    "ABBNY", # ABB Ltd ADR (OTC) — NYSE 的 ABB 已退市, Yahoo 无数据
     "ROK",   # Rockwell Automation
 ]
 
@@ -127,7 +127,10 @@ MOONSHOT_LEADERS = [
 
 # Broad "hot tech" universe for the daily Discord scanner.
 # Curated to span: Mag 7, semis, AI infra, AI-software, frontier tech, ETFs.
-HOT_TECH = (
+# dict.fromkeys dedup: IONQ/RGTI/QBTS appear in both QUANTUM_LEADERS and
+# MOONSHOT_LEADERS — without dedup they were double-counted in breadth,
+# movers and action levels.
+HOT_TECH = list(dict.fromkeys(
     # Mag 7 + adjacent mega-cap
     ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA"]
     # Semi leaders
@@ -142,7 +145,7 @@ HOT_TECH = (
     + MOONSHOT_LEADERS
     # Sector / levered ETFs (context references)
     + ["SMH", "SOXX", "QQQ", "XLK", "SOXL", "TQQQ", "TECL"]
-)
+))
 
 
 def categorize_hot_tech(ticker: str) -> str:

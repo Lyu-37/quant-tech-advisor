@@ -27,6 +27,11 @@ class EarningsEvent:
     days_until: int
     eps_estimate: float | None = None
     revenue_estimate: float | None = None
+    # Yahoo gives a RANGE of candidate dates for unconfirmed reports. A single
+    # date is *probably* confirmed; a range is definitely an estimate. Render
+    # estimates with an "约" marker — Yahoo's estimated dates routinely move
+    # by days, and a false "5 天后财报" can trigger premature de-risking.
+    confirmed: bool = True
 
 
 def _coerce_date(x) -> date | None:
@@ -86,17 +91,19 @@ def upcoming_earnings(ticker: str, within_days: int = 21) -> EarningsEvent | Non
         except Exception:
             pass
 
-    report_dates = [d for d in report_dates if d is not None and today <= d <= cutoff]
-    if not report_dates:
+    all_dates = [d for d in report_dates if d is not None]
+    in_window = [d for d in all_dates if today <= d <= cutoff]
+    if not in_window:
         return None
 
-    nearest = min(report_dates)
+    nearest = min(in_window)
     return EarningsEvent(
         ticker=ticker,
         report_date=nearest,
         days_until=(nearest - today).days,
         eps_estimate=float(eps_est) if isinstance(eps_est, (int, float)) else None,
         revenue_estimate=float(rev_est) if isinstance(rev_est, (int, float)) else None,
+        confirmed=(len(set(all_dates)) == 1),
     )
 
 
@@ -121,6 +128,7 @@ def render_earnings_block(events: list[EarningsEvent], limit: int = 10) -> str:
     for e in events[:limit]:
         eps = f"${e.eps_estimate:.2f}" if e.eps_estimate else "—"
         urgency = "**[本周]**" if e.days_until <= 7 else ""
-        lines.append(f"| **{e.ticker}** | {e.report_date.isoformat()} "
+        approx = "" if e.confirmed else " (约)"
+        lines.append(f"| **{e.ticker}** | {e.report_date.isoformat()}{approx} "
                      f"| {e.days_until}d {urgency} | {eps} |")
     return "\n".join(lines) + "\n"

@@ -10,6 +10,9 @@ dependencies = [
     "pyyaml>=6.0",
     "matplotlib>=3.7",
     "pyarrow>=14.0",
+    # yfinance earnings_dates scrapes HTML via pandas.read_html -> needs lxml.
+    # Without it every PEAD lookup silently returned empty (caught 2026-06-10).
+    "lxml>=4.9",
 ]
 
 [project.optional-dependencies]

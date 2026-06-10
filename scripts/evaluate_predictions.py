@@ -45,11 +45,16 @@ def load_snapshots() -> list[dict]:
 
 
 def fetch_prices_at_date(tickers: list[str], target_date: date) -> dict[str, float]:
-    """Get adjusted close price as of target_date (or nearest prior trading day)."""
+    """Get adjusted close price as of target_date (or nearest prior trading day).
+
+    NOTE: fetch_universe anchors its window to TODAY, so the lookback must
+    reach from today all the way back past target_date. The old code passed a
+    fixed 13-day lookback, which silently dropped every snapshot older than
+    ~2 weeks from the evaluation.
+    """
     out = {}
-    end = target_date + timedelta(days=3)
-    start = target_date - timedelta(days=10)
-    data = fetch_universe(tickers, lookback_days=(end - start).days, use_cache=True)
+    days_back = (date.today() - target_date).days + 15
+    data = fetch_universe(tickers, lookback_days=max(days_back, 15), use_cache=True)
     target_ts = pd.Timestamp(target_date)
     for t, df in data.items():
         if df is None or df.empty:

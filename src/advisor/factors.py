@@ -24,6 +24,31 @@ NON_FUNDAMENTAL_SYMBOLS = {
 }
 
 
+# Per-run shared .info cache. quality / valuation / analyst / guru screens all
+# read the same snapshot — one HTTP call per ticker per run instead of 4-5,
+# and no risk of the four consumers seeing different data mid-run.
+_INFO_CACHE: dict[str, dict | None] = {}
+
+
+def get_info(ticker: str) -> dict | None:
+    """Fetch (once per run) and cache yfinance .info for a ticker."""
+    if ticker in NON_FUNDAMENTAL_SYMBOLS:
+        return None
+    if ticker in _INFO_CACHE:
+        return _INFO_CACHE[ticker]
+    try:
+        with redirect_stderr(StringIO()):
+            info = yf.Ticker(ticker).info or {}
+    except Exception:
+        info = None
+    _INFO_CACHE[ticker] = info if info else None
+    return _INFO_CACHE[ticker]
+
+
+def clear_info_cache() -> None:
+    _INFO_CACHE.clear()
+
+
 @dataclass
 class QualityFactor:
     """QMJ-style quality score (0-10, higher = higher quality)."""
@@ -40,18 +65,16 @@ class QualityFactor:
     label: str = "neutral"
 
 
-def compute_quality(ticker: str) -> QualityFactor | None:
+def compute_quality(ticker: str, info: dict | None = None) -> QualityFactor | None:
     """Pull yfinance fundamentals; compute QMJ-inspired quality score.
 
     Returns None for ETFs/indices (no fundamentals).
+    `info` is injectable for tests; defaults to the shared per-run cache.
     """
     if ticker in NON_FUNDAMENTAL_SYMBOLS:
         return None
-    try:
-        with redirect_stderr(StringIO()):
-            info = yf.Ticker(ticker).info or {}
-    except Exception:
-        return None
+    if info is None:
+        info = get_info(ticker)
     if not info or info.get("trailingPE") is None and info.get("profitMargins") is None:
         return None
 
@@ -85,18 +108,22 @@ def compute_quality(ticker: str) -> QualityFactor | None:
     q.profitability_score = float(profitability_score)
 
     # Safety sub-score (0-10): lower debt = safer
-    # yfinance debtToEquity is often percentage (e.g. 50 = 50%, sometimes ratio)
+    # yfinance .info debtToEquity is ALWAYS percent form (verified live:
+    # NVDA=6.55 means 6.55%, ARM=5.93, MU=14.9). Never a ratio — divide
+    # unconditionally. (The old ">5 means percent" heuristic had a cliff at 5
+    # that would zero out the safety score of near-debt-free companies.)
     de = q.debt_to_equity
     if de is None:
         safety_pts = 5.0
     else:
-        # Normalize: large numbers are percentages, small are ratios
-        de_ratio = de / 100 if abs(de) > 5 else de
+        de_ratio = de / 100.0
         # D/E < 0.5 = excellent (10), > 3 = poor (0)
         safety_pts = float(max(0, min(10, 10 - de_ratio * 3)))
     q.safety_score = safety_pts
 
-    # Composite: 60% profitability + 40% safety (Asness weighting)
+    # Composite: 60% profitability + 40% safety. NOTE: this weighting is our
+    # own choice — the QMJ paper z-scores components equal-weight. Calling it
+    # "QMJ-inspired" is honest; calling it QMJ would not be.
     q.composite_score = float(profitability_score * 0.60 + safety_pts * 0.40)
 
     if q.composite_score >= 7:
@@ -126,15 +153,13 @@ class AnalystConsensus:
     flag: str = ""                        # "远超目标价" / "深度低于目标" / ""
 
 
-def compute_analyst(ticker: str, current_price: float | None = None) -> AnalystConsensus | None:
+def compute_analyst(ticker: str, current_price: float | None = None,
+                    info: dict | None = None) -> AnalystConsensus | None:
     """Pull analyst consensus from yfinance. None for ETFs/no coverage."""
     if ticker in NON_FUNDAMENTAL_SYMBOLS:
         return None
-    try:
-        with redirect_stderr(StringIO()):
-            info = yf.Ticker(ticker).info or {}
-    except Exception:
-        return None
+    if info is None:
+        info = get_info(ticker)
     if not info:
         return None
 
@@ -205,78 +230,96 @@ def render_analyst_field(analyst_data: dict) -> dict | None:
 
 @dataclass
 class PEADSignal:
-    """Post-earnings-announcement drift status."""
+    """Post-earnings price-momentum status.
+
+    Honest framing: this is NOT textbook Bernard-Thomas PEAD (that conditions
+    on standardized earnings surprise). It measures price drift AFTER the
+    announcement reaction, plus the reported surprise sign when available.
+    """
     ticker: str
     in_drift_window: bool = False
     days_since_earnings: int = 0
     earnings_date: Optional[date] = None
     drift_since_earnings: Optional[float] = None
+    surprise_pct: Optional[float] = None   # reported EPS surprise %, if known
     direction: str = "neutral"     # positive / negative / neutral
     label: str = "no_recent_earnings"
 
 
-def compute_pead(ticker: str, close: pd.Series, window_days: int = 60) -> PEADSignal | None:
+def compute_pead(ticker: str, close: pd.Series, window_days: int = 60,
+                 earnings_df: pd.DataFrame | None = None) -> PEADSignal | None:
     """Detect post-earnings drift within `window_days` of last earnings.
 
-    Returns the cumulative price change since the most recent past earnings
-    date (if within window). Per Bernard-Thomas, this drift tends to continue:
-      drift > +5% = positive PEAD (continue bullish)
-      drift < -5% = negative PEAD (continue bearish)
+    Drift is anchored to the FIRST close strictly AFTER the announcement date,
+    so the announcement-day gap (which you cannot trade) is excluded. The old
+    nearest-close anchor counted an AMC gap as "drift" — a stock that gapped
+    +12% and went flat showed "+12% drift" you could never capture.
+
+      drift > +5% = positive (post-earnings momentum continues, B-T 1989)
+      drift < -5% = negative
       |drift| < 5% = neutral
+
+    `earnings_df` is injectable for tests; defaults to yfinance earnings_dates.
     """
     if ticker in NON_FUNDAMENTAL_SYMBOLS:
         return None
     sig = PEADSignal(ticker=ticker)
-    try:
-        with redirect_stderr(StringIO()):
-            t = yf.Ticker(ticker)
-            df = t.earnings_dates
-    except Exception:
-        return sig
+    df = earnings_df
+    if df is None:
+        try:
+            with redirect_stderr(StringIO()):
+                df = yf.Ticker(ticker).earnings_dates
+        except Exception:
+            return sig
     if df is None or df.empty:
         return sig
 
     today = date.today()
     cutoff = today - timedelta(days=window_days)
 
-    # earnings_dates DF has DatetimeIndex (often tz-aware)
-    past_earnings = []
+    # earnings_dates DF has DatetimeIndex (often tz-aware); may carry a
+    # 'Surprise(%)' column with the reported EPS surprise.
+    past_earnings: list[tuple[date, Optional[float]]] = []
+    surprise_col = next((c for c in df.columns if "surprise" in str(c).lower()), None)
     for ts in df.index:
         try:
             d = ts.date() if hasattr(ts, "date") else pd.Timestamp(ts).date()
         except (ValueError, TypeError):
             continue
         if cutoff <= d <= today:
-            past_earnings.append(d)
+            sp = None
+            if surprise_col is not None:
+                sp = _as_float(df.loc[ts, surprise_col])
+            past_earnings.append((d, sp))
 
     if not past_earnings:
         return sig
-    most_recent = max(past_earnings)
+    most_recent, surprise = max(past_earnings, key=lambda x: x[0])
     days_since = (today - most_recent).days
 
-    # Find close price at most_recent (or nearest trading day)
-    try:
-        idx = close.index.get_indexer([pd.Timestamp(most_recent)], method="nearest")[0]
-    except (KeyError, IndexError):
-        return sig
-    if idx < 0 or idx >= len(close):
-        return sig
+    # Anchor: first close strictly AFTER the announcement date. Correct for
+    # AMC reports (reaction is next session); conservative for BMO reports
+    # (also skips announcement day — underclaims rather than overclaims).
+    anchor_idx = int(close.index.searchsorted(pd.Timestamp(most_recent), side="right"))
+    if anchor_idx >= len(close):
+        return sig          # no post-announcement bar yet (reported today AMC)
 
-    price_at_earnings = float(close.iloc[idx])
-    if price_at_earnings == 0:
+    anchor_price = float(close.iloc[anchor_idx])
+    if anchor_price == 0:
         return sig
-    drift = float(close.iloc[-1] / price_at_earnings - 1)
+    drift = float(close.iloc[-1] / anchor_price - 1)
 
     sig.in_drift_window = True
     sig.days_since_earnings = days_since
     sig.earnings_date = most_recent
     sig.drift_since_earnings = drift
+    sig.surprise_pct = surprise
     if drift > 0.05:
         sig.direction = "positive"
-        sig.label = "财报后正向漂移"
+        sig.label = "财报后正向动量"
     elif drift < -0.05:
         sig.direction = "negative"
-        sig.label = "财报后负向漂移"
+        sig.label = "财报后负向动量"
     else:
         sig.direction = "neutral"
         sig.label = "财报后横盘"

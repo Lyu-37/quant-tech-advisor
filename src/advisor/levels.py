@@ -45,9 +45,12 @@ def compute_levels(close: pd.Series, ticker: str = "") -> ActionLevels | None:
     high_52w = float(window.max())
     low_52w = float(window.min())
 
-    # ATR proxy: std dev of daily returns × current price × √(scaling)
+    # ATR proxy from close-to-close vol. NOTE: for a normal r.v. E[|X|]/σ is
+    # ~0.8, NOT 1.4 — the 1.4 here is an EMPIRICAL fudge that widens the
+    # close-only estimate toward a true ATR (which includes overnight gaps and
+    # intraday range we don't fetch). It is an approximation, nothing more.
     rets = close.pct_change().dropna().tail(20)
-    atr_proxy = float(current * rets.std() * 1.4)   # ~1.4 ≈ E[|X|]/σ for normal
+    atr_proxy = float(current * rets.std() * 1.4)
 
     next_resistance = None
     candidates_above = [v for v in [sma200, sma50, sma20, high_52w]

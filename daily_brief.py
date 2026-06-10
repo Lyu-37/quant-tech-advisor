@@ -21,7 +21,10 @@ import yaml
 from src.advisor.universe import (
     Holding, SEMI_LEADERS, AI_INFRA_LEADERS, HOT_TECH, all_symbols_for_run,
 )
-from src.advisor.fetcher import fetch_universe
+from src.advisor.fetcher import fetch_universe, consensus_as_of, lagging_tickers
+from src.advisor.market_calendar import (
+    is_trading_day, freshness_warning, now_et,
+)
 from src.advisor.indicators import summarize_ticker, relative_strength
 from src.advisor.scoring import composite_sector_score
 from src.advisor.ai_infra import analyze_ai_infra, render_ai_infra_section
@@ -39,7 +42,7 @@ from src.advisor.recommendations import (
 )
 from src.advisor.factors import compute_quality, compute_pead
 from src.advisor.daily_state import (
-    save_snapshot, find_latest_previous, compute_diff,
+    save_snapshot, find_latest_previous, compute_diff, snapshot_exists,
 )
 from src.advisor.portfolio_daily import compute_daily_pnl
 from src.advisor.market_movers import compute_today_movers
@@ -99,7 +102,17 @@ def main():
                         help="skip news fetch (faster local runs)")
     parser.add_argument("--no-llm", action="store_true",
                         help="skip Ollama theme extraction (saves ~30-60s)")
+    parser.add_argument("--force", action="store_true",
+                        help="run even on a non-trading day (data will be "
+                             "labeled with its true as-of date)")
     args = parser.parse_args()
+
+    # Market-closed guard: the scheduled task fires Mon-Fri and used to run on
+    # holidays too (snapshot-2026-05-25 = Memorial Day exists as evidence),
+    # pushing Friday's data labeled as "today". Skip unless forced.
+    if not is_trading_day(date.today()) and not args.force:
+        print(f"{date.today()} 休市 (周末/假期) — 跳过简报. 用 --force 强制运行.")
+        return
 
     cfg_path = PROJECT_ROOT / args.config
     holdings, cfg = load_portfolio(cfg_path)
@@ -114,16 +127,40 @@ def main():
             symbols.append(t)
     print(f"[2/7] Fetching {len(symbols)} symbols...")
     # Always fresh: briefs run once/twice a day, stale data is the worst failure
-    data = fetch_universe(symbols, lookback_days=400, use_cache=False)
-    print(f"      -> got {len(data)} successfully")
+    data = fetch_universe(symbols, lookback_days=800, use_cache=False)
+    n_failed = len(symbols) - len(data)
+    fetch_note = f"{len(data)}/{len(symbols)} 数据源成功"
+    print(f"      -> got {len(data)} successfully ({n_failed} failed)")
 
-    # Set market values (CAD, from screenshot)
-    user_supplied_values = {
-        "AMD": 380.11, "GOOG": 185.69, "MSFT": 96.98, "GEV": 100.66,
-        "GE": 95.04, "BRK-B": 96.75, "VDY.TO": 150.94,
-    }
+    # ------- data freshness: the single most important check -------
+    # Consensus (modal) date, clamped by the calendar: robust both to 24h
+    # instruments carrying tomorrow's bar overnight AND to ad-hoc closures
+    # (mourning days) no hardcoded holiday table can know about.
+    from src.advisor.market_calendar import expected_latest_session
+    as_of_consensus = consensus_as_of(data)
+    if as_of_consensus is None:
+        raise RuntimeError("No data returned for ANY symbol — aborting brief")
+    as_of = min(as_of_consensus, expected_latest_session())
+    fresh_warn = freshness_warning(as_of)
+    laggards = lagging_tickers(data, as_of)
+    if fresh_warn:
+        print(f"      [!] {fresh_warn}")
+    if laggards:
+        print(f"      [!] {len(laggards)} tickers lag the as-of date "
+              f"(excluded from today-math): {', '.join(laggards[:8])}")
+
+    # Market values from LIVE data (close × shares × FX) — replaces the old
+    # hardcoded "from screenshot" dict that froze portfolio values in May.
+    from src.advisor.portfolio_daily import _fetch_usd_cad
+    usd_cad = _fetch_usd_cad()
     for h in holdings:
-        h.set_market_value(user_supplied_values.get(h.ticker, 0.0))
+        df = data.get(h.ticker)
+        if df is None or df.empty:
+            h.set_market_value(0.0)
+            continue
+        px = float(df["close"].iloc[-1])
+        fx = 1.0 if h.ticker.endswith(".TO") else usd_cad
+        h.set_market_value(px * h.shares * fx)
 
     # ------- semi sector composite -------
     print("[3/7] Computing semi sector score...")
@@ -152,7 +189,8 @@ def main():
 
     total_value = sum(h.market_value for h in holdings)
     total_cost = sum(h.cost_basis for h in holdings)
-    weight_amd = next((h.market_value for h in holdings if h.ticker == "AMD"), 0) / total_value
+    weight_amd = (next((h.market_value for h in holdings if h.ticker == "AMD"), 0)
+                  / total_value if total_value else 0.0)
     total_pnl_pct = (total_value - total_cost) / total_cost if total_cost else 0.0
 
     # ------- AI infra theme -------
@@ -204,7 +242,7 @@ def main():
     print(f"      -> {len(portfolio_pnl)} holdings with valid data")
 
     # ------- pullback watchlist (your buy-the-dip monitor) -------
-    watch_verdicts = evaluate_watchlist(watch_cfg, data)
+    watch_verdicts = evaluate_watchlist(watch_cfg, data, as_of=as_of)
     if watch_verdicts:
         actionable = [v for v in watch_verdicts if v.verdict == "可以入场"]
         print(f"[8/9a2] Watchlist: {len(watch_verdicts)} tickers, "
@@ -212,15 +250,17 @@ def main():
 
     # ------- market regime (risk-on/off gate) -------
     print("[8/9a3] Detecting market regime...")
-    regime = detect_regime(data)
-    rs_leaders = find_relative_strength_in_selloff(data)
+    regime = detect_regime(data, as_of=as_of)
+    rs_leaders = find_relative_strength_in_selloff(data, as_of=as_of)
     print(f"      -> {regime.label} (score {regime.score:.0f}, gate={regime.buy_gate})")
 
     # ------- today's market movers + level breaks -------
     print("[8/9b] Scanning today's gainers/losers + level breaks...")
-    market_movers = compute_today_movers(data)
-    print(f"      -> top mover {market_movers.gainers[0].ticker if market_movers.gainers else 'n/a'} "
-          f"({market_movers.gainers[0].today_pct * 100:+.2f}%); "
+    market_movers = compute_today_movers(data, as_of=as_of)
+    top_g = (f"{market_movers.gainers[0].ticker} "
+             f"({market_movers.gainers[0].today_pct * 100:+.2f}%)"
+             if market_movers.gainers else "n/a")
+    print(f"      -> top mover {top_g}; "
           f"{len(market_movers.level_breaks)} level breaks; "
           f"{len(market_movers.new_52w_highs)} new 52w highs")
 
@@ -298,15 +338,18 @@ def main():
           ", ".join(f"{k}={v}" for k, v in rec_counts.items()))
 
     # ------- snapshot diff (today vs most recent previous) -------
+    # Keyed by the DATA's trading date (as_of), not the wall-clock date — a
+    # weekend/holiday run must not mint a phantom non-trading-day snapshot.
     print("[8c/9] Loading previous snapshot for diff...")
-    prev_snapshot = find_latest_previous(date.today())
+    prev_snapshot = find_latest_previous(as_of)
     today_data = {
-        "date": date.today().isoformat(),
+        "date": as_of.isoformat(),
         "composite_semi": float(semi_score.composite_0_100),
         "composite_ai_infra": float(ai_infra_report.composite_0_100),
         "macro_score": float(semi_score.macro.get("score", 5)),
         "actions": {
             r.ticker: {"action": r.action,
+                       "action_pregate": r.pregate_action or r.action,
                        "Q": round(float(r.quality_score), 1),
                        "R": round(float(r.risk_score), 1)}
             for r in recommendations
@@ -358,18 +401,17 @@ def main():
 
     # Compose final report. Recommendations go FIRST (most actionable),
     # then context (sectors/news/levels), then portfolio Greeks at the end.
-    parts = semi_md.split("## 免责声明")
-    full_md = (
-        parts[0]
-        + recs_md + "\n"
+    head, sep, tail = semi_md.partition("## 免责声明")
+    body = (
+        recs_md + "\n"
         + ai_infra_md + "\n"
         + earnings_md + "\n"
         + levels_md + "\n"
         + themes_md
         + news_md + "\n"
         + pmetrics_md + "\n"
-        + "## 免责声明" + parts[1]
     )
+    full_md = head + body + sep + tail   # sep/tail empty if header missing
 
     out_path = save_report(full_md, date.today(), PROJECT_ROOT)
     print(f"      -> saved {out_path}")
@@ -394,6 +436,9 @@ def main():
         rs_leaders=rs_leaders,
         analyst_field=render_analyst_field(analyst_data),
         valuation_field=render_valuation_field(valuation_data),
+        data_as_of=as_of,
+        freshness_warning_text=fresh_warn,
+        fetch_note=fetch_note,
     )
 
     if args.no_discord:
@@ -402,16 +447,24 @@ def main():
         send_embed(**embed_kwargs)
 
     # ------- save today's snapshot for tomorrow's diff -------
-    snap_path = save_snapshot(
-        date.today(),
-        recommendations=recommendations,
-        semi_score=semi_score,
-        ai_infra_report=ai_infra_report,
-        themes=themes,
-        earnings_events=earnings_events,
-        stretched_tickers=today_data["stretched"],
-    )
-    print(f"      -> snapshot saved: {snap_path.name}")
+    # A pre-open rerun (wall date != as_of) must NOT overwrite the historical
+    # snapshot written after that session's close — .info fields drift
+    # overnight and would silently rewrite the prediction record that
+    # evaluate_predictions.py scores.
+    if snapshot_exists(as_of) and date.today() != as_of:
+        print(f"      -> snapshot {as_of} already exists (pre-open rerun) — "
+              "keeping the original")
+    else:
+        snap_path = save_snapshot(
+            as_of,
+            recommendations=recommendations,
+            semi_score=semi_score,
+            ai_infra_report=ai_infra_report,
+            themes=themes,
+            earnings_events=earnings_events,
+            stretched_tickers=today_data["stretched"],
+        )
+        print(f"      -> snapshot saved: {snap_path.name}")
 
     print("\nDone. Composite semi score: "
           f"{semi_score.composite_0_100:.1f}/100 ({semi_score.label})")
@@ -419,5 +472,28 @@ def main():
         print("AMD stretch severity HIGH — see local report for action plan.")
 
 
+def _notify_failure(err: Exception) -> None:
+    """A silently-missing brief is itself a data-integrity failure — tell the
+    user the run died instead of letting them assume 'no news today'."""
+    if not os.environ.get("DISCORD_WEBHOOK_URL"):
+        return
+    try:
+        send_embed(
+            title=f"daily_brief 运行失败 · {date.today().isoformat()}",
+            description=(f"今日简报没有生成 — **不要把 \"没收到\" 当 \"无事发生\"**.\n"
+                         f"```\n{type(err).__name__}: {str(err)[:600]}\n```"),
+            color=0xED4245,
+            footer="检查 logs/daily_brief.err.log",
+        )
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        _notify_failure(e)
+        raise

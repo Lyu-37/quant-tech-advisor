@@ -65,3 +65,34 @@ pip install -e ".[dev]"  # 安装依赖
 python run.py            # 跑默认回测
 pytest tests/            # 跑测试
 ```
+
+---
+
+## Advisor 子系统硬性约束 (2026-06-10 审查后确立)
+
+完整审查报告: `results/code-review-2026-06-10.md`。修改 advisor 前先读它。
+
+1. **"今日"语义必须经过 as-of 校验**
+   - 所有日期逻辑必须走 `src/advisor/market_calendar.py`(ET 时区 + NYSE 假期表),禁止 `datetime.utcnow()` / 裸 weekday 判断。
+   - 运行的有效数据日 = `fetcher.consensus_as_of(data)`(横截面众数, 对 24h 品种隔夜 bar 和临时休市都稳健), 再被 `expected_latest_session()` 钳制。
+   - 数据日 != 预期交易日时, embed 必须带"数据截至 X"警告; `iloc[-1]` 滞后于 as-of 的 ticker 必须从一切"今日"计算中剔除。
+   - 假期表只写到 2027 年底, 2028 前必须扩展 `HOLIDAYS`(越界会 raise)。
+
+2. **regime 闸门覆盖一切带金额的买入输出**
+   - 建仓/加仓/试探/短期反弹候选/moonshot 试水/watchlist 可以入场, 全部受 `buy_gate` 管制, 不允许新增绕过闸门的买入路径。
+   - VIX 或 SPY 数据缺失时闸门强制不高于 caution(缺数据 != 安全)。
+   - market pulse 必须从 regime 对象派生, 禁止第二套市场状态判定。
+
+3. **yfinance 字段语义(实测验证, 勿改回)**
+   - `debtToEquity` 恒为百分比 → 一律 `/100`, 禁止 ">5 才是百分比"启发式。
+   - `earningsGrowth`/`revenueGrowth` 是季度 YoY, 周期底会出现 +700%+ 的低基数失真 → guru 规则对 >200% 打折。
+   - `earnings_dates` 依赖 lxml(在 pyproject 里), 缺了会静默返回空 → PEAID 信号消失。
+   - `.info` 每 run 通过 `factors.get_info()` 共享缓存, 禁止各模块自己拉。
+
+4. **PEAD drift 从公告后首个收盘起算**(跳空不可交易, 不算 drift), 负 surprise 时价格漂移不加分。
+
+5. **moonshot 豁免有边界**: "避免"永不翻转; 距 52w 高 -50% 或 12-1 < -60% 的死亡螺旋保留"清仓"。
+
+6. **snapshot 是预测历史记录**: 按 as-of 交易日存, 盘前重跑禁止覆写已存在的 snapshot(evaluate_predictions 依赖它)。
+
+7. **关键回归测试在 `tests/test_advisor_critical.py`** — 改 watchlist/regime/gate/factors/calendar 任何一处, 先跑 `pytest tests/`。

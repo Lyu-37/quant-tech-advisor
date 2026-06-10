@@ -13,12 +13,9 @@ Approach:
 Output is a label + a mild tilt fed into quality scoring. Valuation is a
 SLOW signal — it should nudge, not dominate momentum/quality.
 """
-from contextlib import redirect_stderr
 from dataclasses import dataclass
-from io import StringIO
-import yfinance as yf
 
-from .factors import NON_FUNDAMENTAL_SYMBOLS, _as_float
+from .factors import NON_FUNDAMENTAL_SYMBOLS, _as_float, get_info
 
 
 @dataclass
@@ -59,14 +56,11 @@ def apply_context(v: "Valuation", stretch_severity: int = 0,
     return v
 
 
-def compute_valuation(ticker: str) -> Valuation | None:
+def compute_valuation(ticker: str, info: dict | None = None) -> Valuation | None:
     if ticker in NON_FUNDAMENTAL_SYMBOLS:
         return None
-    try:
-        with redirect_stderr(StringIO()):
-            info = yf.Ticker(ticker).info or {}
-    except Exception:
-        return None
+    if info is None:
+        info = get_info(ticker)
     if not info:
         return None
 
@@ -76,10 +70,33 @@ def compute_valuation(ticker: str) -> Valuation | None:
     v.peg          = _as_float(info.get("pegRatio") or info.get("trailingPegRatio"))
     v.ps           = _as_float(info.get("priceToSalesTrailing12Months"))
     v.gross_margin = _as_float(info.get("grossMargins"))
+    profit_margin  = _as_float(info.get("profitMargins"))
+
+    # Missing forwardPE is NOT evidence of unprofitability (Yahoo hiccups,
+    # missing estimates). Only declare 无盈利 when there is positive evidence
+    # of losses; with a positive trailingPE or margin, fall through to the
+    # profitable paths using trailingPE as the PE fallback.
+    has_profit_evidence = ((v.trailing_pe is not None and v.trailing_pe > 0)
+                           or (profit_margin is not None and profit_margin > 0))
+    if v.forward_pe is None and has_profit_evidence:
+        v.forward_pe = v.trailing_pe
+        if v.forward_pe is None:
+            # Profitable by margin but no PE fields at all — data gap, not loss.
+            v.label = "数据不足"
+            v.tilt = 0.0
+            v.detail = ("盈利 (margin "
+                        + (f"{profit_margin * 100:.0f}%" if profit_margin else "?")
+                        + ") 但 PE 字段缺失, 不参与估值分类")
+            return v
 
     # ---- Classify ----
-    # Case 1: unprofitable (no positive forward PE)
+    # Case 1: unprofitable (negative PE, or no PE and no profit evidence)
     if v.forward_pe is None or v.forward_pe < 0:
+        if v.forward_pe is None and v.ps is None:
+            v.label = "数据不足"
+            v.tilt = 0.0
+            v.detail = "估值字段缺失, 无法分类 (非 '无盈利')"
+            return v
         if v.ps is not None:
             if v.ps > 40:
                 v.label = "极贵 (亏损+高PS)"

@@ -29,59 +29,6 @@ def _fmt_pct(x: float, sign: bool = True) -> str:
     return (f"{x * 100:+.0f}%" if sign else f"{x * 100:.0f}%")
 
 
-def _build_sector_tilts(summaries: dict[str, dict]) -> list[str]:
-    """Pair-trade / relative-value narrative within each major sub-sector.
-
-    For each pre-defined comparison pair, pick the side with better (Q-R) balance
-    using 12-1 momentum + distance to SMA200 (less is better) + 20d return.
-    Returns one-line strings of the form '半导体: 优选 NVDA > AMD (理由)'.
-    """
-    pairs = [
-        ("半导体 (AI 算力)", ["NVDA", "AMD", "AVGO", "TSM", "MU"]),
-        ("AI 基建 (数据中心)", ["VRT", "GEV", "PWR", "ETN", "ANET"]),
-        ("Mag 7 (大科技)", ["AAPL", "AMZN", "GOOG", "MSFT", "META", "TSLA"]),
-        ("量子计算", ["IONQ", "QUBT", "RGTI", "QBTS"]),
-        ("光通信", ["LITE", "COHR", "CIEN", "FN", "AAOI"]),
-    ]
-    lines = []
-    for label, tickers in pairs:
-        scored = []
-        for t in tickers:
-            s = summaries.get(t)
-            if not s:
-                continue
-            # Asymmetry score: prefer high 12-1 + low stretch + recent ret>0
-            m121 = (s.get("momentum_12_1", {}).get("value") or 0)
-            dist200 = (s.get("dist_sma200") or 0)
-            ret20 = (s.get("ret_20d") or 0)
-            sev = s.get("stretch", {}).get("severity", 0)
-            asym = m121 * 0.5 - max(0, dist200 - 0.3) * 1.0 + ret20 * 0.3 - sev * 0.05
-            scored.append((t, asym, s))
-        if len(scored) < 2:
-            continue
-        scored.sort(key=lambda x: -x[1])
-        winner, _, win_s = scored[0]
-        loser, _, lose_s = scored[-1]
-        if winner == loser:
-            continue
-        # Build comparison rationale
-        w_d200 = (win_s.get("dist_sma200") or 0) * 100
-        l_d200 = (lose_s.get("dist_sma200") or 0) * 100
-        if abs(w_d200) < abs(l_d200):
-            reason = (f"距 SMA200: {winner} +{w_d200:.0f}% vs {loser} +{l_d200:.0f}% · "
-                      f"前者更安全")
-        else:
-            w_m = (win_s.get("momentum_12_1", {}).get("value") or 0) * 100
-            l_m = (lose_s.get("momentum_12_1", {}).get("value") or 0) * 100
-            reason = f"12-1 动量: {winner} {w_m:+.0f}% vs {loser} {l_m:+.0f}%"
-        lines.append(
-            f"▶  **{label}**\n"
-            f"     优选 `{winner}` ↑  vs  `{loser}` ↓\n"
-            f"     _{reason}_"
-        )
-    return lines
-
-
 def _table_block(rows: list[tuple], headers: tuple, col_widths: tuple) -> str:
     """Build a monospace code-block table for Discord field values."""
     lines = []
@@ -144,10 +91,10 @@ def moonshot_score(summary: dict, news_summary=None) -> dict:
             m121_pts = 0.0      # down 50%+ over 12-1 = dying
         elif m121 < -0.20:
             m121_pts = 3.0
+        elif m121 > 0.50:       # check the stronger threshold FIRST —
+            m121_pts = 10.0     # the old order made this branch unreachable
         elif m121 > 0.20:
             m121_pts = 8.0      # already moving = catalysts working
-        elif m121 > 0.50:
-            m121_pts = 10.0
 
     # News sentiment bonus
     news_pts = 5.0
@@ -238,8 +185,16 @@ def build_scanner_embed(
     rs_leaders: list[tuple] | None = None,
     analyst_field: dict | None = None,
     valuation_field: dict | None = None,
+    data_as_of=None,
+    freshness_warning_text: str | None = None,
+    fetch_note: str = "",
 ) -> dict:
-    """Return kwargs dict ready for discord_push.send_embed."""
+    """Return kwargs dict ready for discord_push.send_embed.
+
+    data_as_of / freshness_warning_text: the run's true data date and, when it
+    is NOT the expected latest session, a loud warning to lead the embed with.
+    fetch_note: data-quality note for the footer ("78/80 数据源成功" etc.).
+    """
     earnings_events = earnings_events or []
     action_levels = action_levels or []
     themes = themes or []
@@ -324,27 +279,23 @@ def build_scanner_embed(
     composite = semi_score.composite_0_100
     ai_score = ai_infra_report.composite_0_100
 
-    # Market pulse — read TODAY's actual SPY/QQQ/VIX moves. This is the real
-    # "today's temperature", separate from the slow sector composite score.
-    def _today_move(ticker: str):
-        df = data.get(ticker)
-        if df is None or df.empty or len(df) < 2:
-            return None
-        return float(df["close"].iloc[-1] / df["close"].iloc[-2] - 1)
+    # Market pulse — derived from the SAME MarketRegime object that drives the
+    # buy gate. The old code re-implemented crash detection here with
+    # DIFFERENT thresholds (VIX>25 vs regime's 28, ΔVIX 15% vs 25%), so one
+    # embed could simultaneously say "系统性大跌" in the description and
+    # "体制正常可买" in the regime field. One market state, one source.
+    spy_chg = regime.spy_today if regime is not None else None
+    qqq_chg = regime.qqq_today if regime is not None else None
+    vix_level = regime.vix_level if regime is not None else None
+    vix_chg = regime.vix_change if regime is not None else None
 
-    spy_chg = _today_move("SPY")
-    qqq_chg = _today_move("QQQ")
-    vix_df = data.get("^VIX")
-    vix_level = float(vix_df["close"].iloc[-1]) if vix_df is not None and not vix_df.empty else None
-    vix_chg = _today_move("^VIX")
-
-    # Classify the day from real data
     worst = min([x for x in [spy_chg, qqq_chg] if x is not None], default=0)
     best = max([x for x in [spy_chg, qqq_chg] if x is not None], default=0)
-    vix_spike = (vix_chg is not None and vix_chg > 0.15) or (vix_level is not None and vix_level > 25)
 
-    if worst <= -0.02 or vix_spike:
+    if regime is not None and regime.label == "系统性大跌":
         pulse = "系统性大跌"
+    elif regime is not None and regime.label == "risk_off":
+        pulse = "risk-off 下行"
     elif worst <= -0.008:
         pulse = "回调下行"
     elif best >= 0.008 and worst >= -0.003:
@@ -386,10 +337,16 @@ def build_scanner_embed(
     n_sell = rec_counts.get("减仓", 0) + rec_counts.get("清仓", 0)
     n_avoid = rec_counts.get("避免", 0)
 
+    stale_banner = ""
+    if freshness_warning_text:
+        stale_banner = f"**[!] {freshness_warning_text}**\n\n"
+    day_word = "今日" if not freshness_warning_text else f"{data_as_of} (最近交易日)"
+
     desc = (
-        f"**【{today_theme['weekday_name']}主题: {today_theme['name']}】**\n"
+        stale_banner
+        + f"**【{today_theme['weekday_name']}主题: {today_theme['name']}】**\n"
         f"_{today_theme['focus']}_\n\n"
-        f"**今日大盘: {pulse}**   {pulse_numbers}{macro_warning}\n"
+        f"**{day_word}大盘: {pulse}**   {pulse_numbers}{macro_warning}\n"
         f"扫描 {len(summaries)} 只热门科技股 · {n_stretched} 只过热 · "
         f"**{n_buy} 买 / {n_sell} 卖 / {n_avoid} 避**\n\n"
         f"_Q: 越高越好 (技术 + 动量 + 同行)_ · "
@@ -409,7 +366,11 @@ def build_scanner_embed(
         fields.append(render_regime_field(regime, rs_leaders))
 
     # ===== 第二: 你的回调买点 watchlist (最个性化+可操作) =====
-    watch_field = render_watchlist_field(watch_verdicts)
+    # Gate-aware: on risk-off the 可以入场 lines render as "等体制转好".
+    watch_field = render_watchlist_field(
+        watch_verdicts,
+        buy_gate=(regime.buy_gate if regime is not None else "pass"),
+    )
     if watch_field:
         fields.append(watch_field)
 
@@ -449,6 +410,8 @@ def build_scanner_embed(
         fields.append(valuation_field)
 
     # ===== 10x 候选 (单独评分体系, 主推荐之后) =====
+    # Gate-aware: on risk-off the scores still show (information) but the
+    # trading instruction is replaced — no "$30-50 试水" on a crash day.
     moonshots = rank_moonshots(summaries, news_summaries)
     top_moonshots = [m for m in moonshots if m["score"] >= 50][:5]
     if top_moonshots:
@@ -464,12 +427,20 @@ def build_scanner_embed(
                 m["label"][:8],
                 flags[:18],
             ))
+        gate_temper = regime is not None and regime.buy_gate == "temper"
+        if gate_temper:
+            moonshot_tail = ("_大盘 risk-off — 今日仅观察, 不建议试水. "
+                             "等体制转好再看这张表._")
+        else:
+            moonshot_tail = ("_这些标的: 高赔率 / 高失败率, 单笔 $30-50 试水, "
+                             "不超过组合 5%_")
         fields.append({
-            "name": "[M] 10x 候选 (冷门小盘 · 单独评分 · 极高波动)",
+            "name": ("[M] 10x 候选 (冷门小盘 · 单独评分 · 极高波动)"
+                     + (" · risk-off 暂停操作" if gate_temper else "")),
             "value": (_table_block(rows,
                                    ("Ticker", "主题", "60d", "分", "档", "警示"),
                                    (8, 8, 7, 5, 9, 19))
-                      + "_这些标的: 高赔率 / 高失败率, 单笔 $30-50 试水, 不超过组合 5%_"),
+                      + moonshot_tail),
             "inline": False,
         })
 
@@ -513,8 +484,9 @@ def build_scanner_embed(
         for e in earnings_events[:6]:
             marker = "▲" if e.days_until <= 7 else "○"
             urgency = "  ★ 本周事件" if e.days_until <= 7 else ""
+            approx = "" if getattr(e, "confirmed", True) else " (约, Yahoo估计)"
             lines.append(
-                f"{marker}  `{e.ticker}`  ·  {e.report_date.isoformat()}  "
+                f"{marker}  `{e.ticker}`  ·  {e.report_date.isoformat()}{approx}  "
                 f"·  距今 **{e.days_until} 天**{urgency}"
             )
         fields.append({
@@ -572,11 +544,18 @@ def build_scanner_embed(
             "inline": False,
         })
 
+    title_date = (run_date.isoformat() if data_as_of is None
+                  else f"{run_date.isoformat()} (数据截至 {data_as_of})")
+    if data_as_of is not None and str(data_as_of) == run_date.isoformat():
+        title_date = run_date.isoformat()
+    footer = "数据 yfinance · 完整报告已保存本地 · 蒙特利尔 ET"
+    if fetch_note:
+        footer = f"{fetch_note} · {footer}"
     return {
-        "title": (f"科技板块扫描 · {run_date.isoformat()} · "
+        "title": (f"科技板块扫描 · {title_date} · "
                   f"{today_theme['weekday_name']} · {today_theme['name']}"),
         "description": desc,
         "fields": fields,
         "color": score_to_color(composite),
-        "footer": "数据 yfinance · 完整报告已保存本地 · 蒙特利尔 ET",
+        "footer": footer,
     }

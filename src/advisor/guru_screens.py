@@ -9,19 +9,23 @@ Gurus implemented:
   - Buffett        : moat (high margins) + quality (ROE) + low debt + fair price
   - Graham         : deep value + margin of safety (Graham Number, low PB/PE)
   - Lynch          : GARP — PEG < 1 + earnings growth + not nosebleed
-  - Greenblatt     : Magic Formula — high ROIC (ROA proxy) + high earnings yield
-  - Piotroski      : F-Score — 9-point fundamental-health checklist
+  - Greenblatt     : Magic Formula proxy — ROA for ROIC, EV/EBITDA for EV/EBIT
+  - Piotroski      : SIMPLIFIED static health checklist — the real F-Score uses
+                     year-over-year DELTAS (ΔROA, Δleverage, Δmargin, Δturnover,
+                     no dilution); .info only gives levels, so this version has
+                     much weaker discrimination on uniformly-profitable tech.
   - Burry          : deep value + FCF yield + cheap EV/EBITDA
 
-References: each methodology is publicly documented; these are faithful
-quantitative encodings, not the LLM-persona versions.
+Honesty notes baked into the output:
+  - Graham/Burry-style value rules are structurally bearish on growth tech;
+    a low bullish count is partly that, not pure bearishness.
+  - Cyclical trap: low PE/PEG at an earnings-cycle peak lights up the value
+    rules in unison. `analyze_gurus` accepts technical context (stretch /
+    above-analyst-target) and flags the consensus instead of presenting it raw.
 """
-from contextlib import redirect_stderr
 from dataclasses import dataclass, field
-from io import StringIO
-import yfinance as yf
 
-from .factors import NON_FUNDAMENTAL_SYMBOLS, _as_float
+from .factors import NON_FUNDAMENTAL_SYMBOLS, _as_float, get_info
 
 
 @dataclass
@@ -42,16 +46,13 @@ class GuruConsensus:
     consensus: str = ""     # 大佬共识 verdict
     score: float = 0.0      # 0-100 aggregate
     top_fans: list = field(default_factory=list)   # gurus who like it most
+    trap_warning: bool = False   # value rules lit up at a technical extreme
 
 
 def _get_fundamentals(ticker: str) -> dict | None:
     if ticker in NON_FUNDAMENTAL_SYMBOLS:
         return None
-    try:
-        with redirect_stderr(StringIO()):
-            info = yf.Ticker(ticker).info or {}
-    except Exception:
-        return None
+    info = get_info(ticker)
     if not info or info.get("marketCap") is None:
         return None
     return info
@@ -81,8 +82,9 @@ def _buffett(f: dict) -> GuruVote:
     # Operating efficiency
     if om and om > 0.20:
         score += 15; reasons.append(f"经营高效 (营业利润率 {om*100:.0f}%)")
-    # Balance sheet: low debt (de here is in %, e.g. 50 = 0.5x)
-    de_ratio = (de / 100) if de and de > 5 else de
+    # Balance sheet: low debt. yfinance debtToEquity is ALWAYS percent
+    # (NVDA=6.55 means 6.55%) — divide unconditionally, no heuristic.
+    de_ratio = (de / 100.0) if de is not None else None
     if de_ratio is not None and de_ratio < 0.5:
         score += 20; reasons.append("低负债")
     elif de_ratio is not None and de_ratio < 1.5:
@@ -147,15 +149,22 @@ def _lynch(f: dict) -> GuruVote:
         score += 18
     elif peg and peg > 2.5:
         score -= 10; reasons.append(f"PEG {peg:.1f} (太贵)")
-    # Earnings growth
-    if eg and eg > 0.25:
+    # Earnings growth. CAUTION: yfinance earningsGrowth is QUARTERLY YoY —
+    # at a cycle trough the comp explodes (live examples: MU +756%, GEV
+    # +1816%). Growth that extreme is a low-base artifact, not GARP fuel:
+    # give it a token nod, not the full Lynch bonus.
+    if eg and eg > 2.0:
+        score += 8; reasons.append(f"盈利增速 +{eg*100:.0f}% (低基数失真, 打折)")
+    elif eg and eg > 0.25:
         score += 25; reasons.append(f"盈利高增长 ({eg*100:.0f}%)")
     elif eg and eg > 0.10:
         score += 12
     elif eg and eg < 0:
         score -= 10
-    # Revenue growth
-    if rg and rg > 0.20:
+    # Revenue growth (same quarterly-YoY caveat, same cap)
+    if rg and rg > 2.0:
+        score += 6; reasons.append(f"营收增速 +{rg*100:.0f}% (低基数失真, 打折)")
+    elif rg and rg > 0.20:
         score += 20; reasons.append(f"营收高增长 ({rg*100:.0f}%)")
     elif rg and rg > 0.08:
         score += 8
@@ -193,7 +202,14 @@ def _greenblatt(f: dict) -> GuruVote:
 
 
 def _piotroski(f: dict) -> GuruVote:
-    """F-Score: 9-point fundamental-health checklist (simplified to available fields)."""
+    """SIMPLIFIED static health checklist, NOT the real F-Score.
+
+    Piotroski's 9 points are mostly year-over-year IMPROVEMENTS (ΔROA,
+    Δleverage, Δliquidity, Δmargin, Δturnover, no dilution). .info only
+    exposes current levels, so this version checks levels — fine as a
+    "is this a financially sound company" gate, but expect uniformly high
+    scores (6-8/9) across profitable mega-cap tech. Low discrimination.
+    """
     score_pts = 0
     reasons = []
     roa = _as_float(f.get("returnOnAssets"))
@@ -213,8 +229,8 @@ def _piotroski(f: dict) -> GuruVote:
         score_pts += 1
     if ocf and ni and ocf > ni:   # quality of earnings
         score_pts += 1
-    # Leverage / liquidity
-    de_ratio = (de / 100) if de and de > 5 else de
+    # Leverage / liquidity (debtToEquity is always percent — see _buffett)
+    de_ratio = (de / 100.0) if de is not None else None
     if de_ratio is not None and de_ratio < 1.0:
         score_pts += 1
     if cr and cr > 1.5:
@@ -226,9 +242,9 @@ def _piotroski(f: dict) -> GuruVote:
         score_pts += 1
     if fcf and fcf > 0:
         score_pts += 1
-    # F-score 0-9 -> 0-100
+    # 0-9 -> 0-100
     score = score_pts / 9 * 100
-    reasons.append(f"F-Score {score_pts}/9")
+    reasons.append(f"财务健康 {score_pts}/9 (简化静态版)")
     if score_pts >= 7:
         reasons.append("财务健康优秀")
     elif score_pts <= 3:
@@ -273,9 +289,18 @@ def _burry(f: dict) -> GuruVote:
 GURU_FUNCS = [_buffett, _graham, _lynch, _greenblatt, _piotroski, _burry]
 
 
-def analyze_gurus(ticker: str) -> GuruConsensus | None:
-    """Run all guru screens on a ticker, return consensus."""
-    f = _get_fundamentals(ticker)
+def analyze_gurus(ticker: str, stretch_severity: int = 0,
+                  above_analyst_target: bool = False,
+                  fundamentals: dict | None = None) -> GuruConsensus | None:
+    """Run all guru screens on a ticker, return consensus.
+
+    `stretch_severity` / `above_analyst_target` provide the technical context
+    for the cyclical-trap flag: when the value rules light up on a name that
+    is simultaneously parabolic (stretch >= 2) or already above the analyst
+    target, the "cheap" consensus is the classic peak-earnings trap (low PE
+    BECAUSE earnings peaked) and must not be presented raw.
+    """
+    f = fundamentals if fundamentals is not None else _get_fundamentals(ticker)
     if f is None:
         return None
     votes = [fn(f) for fn in GURU_FUNCS]
@@ -301,17 +326,35 @@ def analyze_gurus(ticker: str) -> GuruConsensus | None:
     top_fans = [(v.guru, v.verdict, v.reasons[0] if v.reasons else "")
                 for v in fans[:3]]
 
+    # Cyclical-trap flag: bullish value consensus + parabolic technicals.
+    # Same context rule as valuation.apply_context — keeps the two modules
+    # from contradicting each other on the same day (e.g. MU at a memory-
+    # cycle top: valuation says trap, gurus must not say "everyone loves it").
+    trap = bool(bullish >= 2 and (stretch_severity >= 2 or above_analyst_target))
+    if trap:
+        consensus += " (周期顶低估值陷阱风险)"
+
     return GuruConsensus(
         ticker=ticker, votes=votes,
         bullish=bullish, bearish=bearish, neutral=neutral,
         consensus=consensus, score=avg_score, top_fans=top_fans,
+        trap_warning=trap,
     )
 
 
-def analyze_guru_universe(tickers: list[str]) -> dict[str, GuruConsensus]:
+def analyze_guru_universe(tickers: list[str],
+                          stretch_map: dict[str, int] | None = None,
+                          above_target_map: dict[str, bool] | None = None,
+                          ) -> dict[str, GuruConsensus]:
+    stretch_map = stretch_map or {}
+    above_target_map = above_target_map or {}
     out = {}
     for t in tickers:
-        c = analyze_gurus(t)
+        c = analyze_gurus(
+            t,
+            stretch_severity=stretch_map.get(t, 0),
+            above_analyst_target=above_target_map.get(t, False),
+        )
         if c is not None:
             out[t] = c
     return out
@@ -322,22 +365,23 @@ def render_guru_field(consensus_map: dict[str, GuruConsensus],
     """Discord embed field — stocks most loved by the masters."""
     if not consensus_map:
         return None
-    # Sort by (bullish count, avg score)
+    # Sort: clean consensus first, trap-flagged sink below (then by score)
     ranked = sorted(consensus_map.values(),
-                    key=lambda c: (-c.bullish, -c.score))
+                    key=lambda c: (c.trap_warning, -c.bullish, -c.score))
     rows = []
     for c in ranked[:top_n]:
         if c.bullish == 0 and c.score < 40:
             continue
         fans = ", ".join(g for g, _, _ in c.top_fans[:3])
+        trap_tag = "  [陷阱?] 周期顶低估值" if c.trap_warning else ""
         rows.append(
             f"`{c.ticker}` **{c.bullish}/6 大佬看好** (均分 {c.score:.0f})"
-            + (f" · {fans}" if fans else "")
+            + (f" · {fans}" if fans else "") + trap_tag
         )
     if not rows:
         return None
     return {
-        "name": "[大佬] 投资大师共识  ·  谁被几位大佬看好",
+        "name": "[大佬] 投资大师共识  ·  谁被几位大佬看好 (价值规则对成长股结构性偏空)",
         "value": "\n".join(rows),
         "inline": False,
     }

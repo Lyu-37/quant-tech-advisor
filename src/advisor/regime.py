@@ -17,6 +17,7 @@ Regime drives a `buy_gate`:
   risk_off   -> downgrade aggressive 建仓 to 等企稳; surface what's holding up
 """
 from dataclasses import dataclass
+from datetime import date
 import pandas as pd
 
 from .universe import HOT_TECH
@@ -38,8 +39,13 @@ class MarketRegime:
     detail: list                # bullet reasons
 
 
-def _today_change(df: pd.DataFrame) -> float | None:
+def _today_change(df: pd.DataFrame, as_of: date | None = None) -> float | None:
+    """Last-bar % change. If `as_of` is given and this ticker's last bar is
+    older (halted / lagging feed), return None instead of presenting an old
+    session's move as 'today'."""
     if df is None or df.empty or len(df) < 2:
+        return None
+    if as_of is not None and df.index[-1].date() < as_of:
         return None
     return float(df["close"].iloc[-1] / df["close"].iloc[-2] - 1)
 
@@ -60,16 +66,17 @@ def compute_breadth(data: dict[str, pd.DataFrame]) -> float | None:
     return above / total if total else None
 
 
-def detect_regime(data: dict[str, pd.DataFrame]) -> MarketRegime:
+def detect_regime(data: dict[str, pd.DataFrame],
+                  as_of: date | None = None) -> MarketRegime:
     spy = data.get("SPY")
     qqq = data.get("QQQ")
     vix = data.get("^VIX")
     tnx = data.get("^TNX")
 
-    spy_today = _today_change(spy)
-    qqq_today = _today_change(qqq)
+    spy_today = _today_change(spy, as_of)
+    qqq_today = _today_change(qqq, as_of)
     vix_level = float(vix["close"].iloc[-1]) if vix is not None and not vix.empty else None
-    vix_change = _today_change(vix)
+    vix_change = _today_change(vix, as_of)
 
     spy_vs_sma50 = None
     if spy is not None and len(spy) >= 50:
@@ -155,6 +162,18 @@ def detect_regime(data: dict[str, pd.DataFrame]) -> MarketRegime:
         buy_gate = "temper"
         summary = "risk-off 环境 — 买入信号打折, 优先看防御 / 抗跌标的"
 
+    # Fail-safe: if the gate's PRIMARY inputs are missing (VIX or SPY failed
+    # to fetch), the score above silently lost its biggest penalty terms and
+    # drifts optimistic — on exactly the volatile days Yahoo is most likely
+    # to flake. Missing key data must never read as "all clear".
+    if vix_level is None or spy_today is None:
+        missing = [n for n, v in [("VIX", vix_level), ("SPY", spy_today)] if v is None]
+        detail.insert(0, f"关键数据缺失 ({'/'.join(missing)}) — 闸门强制保守")
+        if buy_gate == "pass":
+            buy_gate = "caution"
+            label = "neutral"
+            summary = "关键市场数据缺失 — 体制判断不完整, 按谨慎处理"
+
     return MarketRegime(
         label=label, score=score,
         spy_today=spy_today, qqq_today=qqq_today,
@@ -166,14 +185,18 @@ def detect_regime(data: dict[str, pd.DataFrame]) -> MarketRegime:
 
 
 def find_relative_strength_in_selloff(data: dict[str, pd.DataFrame],
-                                      top_n: int = 6) -> list[tuple]:
+                                      top_n: int = 6,
+                                      as_of: date | None = None) -> list[tuple]:
     """On a down day, which stocks are HOLDING UP best (defensive leaders)."""
     moves = []
+    seen = set()
     for t in HOT_TECH:
-        df = data.get(t)
-        if df is None or df.empty or len(df) < 2:
+        if t in seen:
             continue
-        chg = float(df["close"].iloc[-1] / df["close"].iloc[-2] - 1)
+        seen.add(t)
+        chg = _today_change(data.get(t), as_of)
+        if chg is None:
+            continue
         moves.append((t, chg))
     moves.sort(key=lambda x: -x[1])   # best performers first
     return moves[:top_n]

@@ -47,6 +47,10 @@ class TickerRecommendation:
     supports: list[str] = field(default_factory=list)    # 大白话支持理由
     contras: list[str] = field(default_factory=list)     # 反对意见
     cancel_trigger: str = ""      # 何时取消这个建议
+    # Signal-level action BEFORE the regime gate renamed it. The daily diff
+    # compares THIS, so a gate toggle (建仓 -> 等企稳再建仓) doesn't show up
+    # as a fake rating downgrade wave.
+    pregate_action: str = ""
 
 
 # ---------- 大白话翻译器 ----------
@@ -127,8 +131,9 @@ def translate_action_explanation(action: str) -> str:
             "博一波纯技术反弹. **一周内不涨就走**, 这不是长线持有标的. "
             "比 '避免' 激进, 比 '试探建仓' 更投机.",
         "持有博弹性":
-            "10x 乐透仓位, 已经涨上来了. **用赚到的钱继续博大涨** — 不清仓, "
-            "但建议把止损上移到保本位, 涨到目标价时分批止盈. 这是 house-money 玩法.",
+            "10x 乐透仓位且动能还在. **仅适用于有浮盈的仓位**: 把止损上移到保本位, "
+            "涨到目标价分批止盈 (house-money 玩法). **若你是高位买入的深套仓, "
+            "这条不构成继续持有的理由** — 按你自己的止损纪律执行.",
         "观望":
             "信号模糊, 不上不下. 拿着钱等更明确的方向 — 等价格回调或趋势确认再行动.",
         "减仓":
@@ -191,6 +196,10 @@ def compute_quality(
         drift = pead.drift_since_earnings
         # Map drift to 0-10: +20% = 10, -20% = 0
         pead_pts = float(max(0, min(10, 5 + drift * 25)))
+        # Drift up but the reported EPS surprise was NEGATIVE: price action
+        # disagrees with fundamentals — don't reward it (cap at neutral).
+        if pead.surprise_pct is not None and pead.surprise_pct < 0:
+            pead_pts = min(pead_pts, 5.0)
 
     weighted = (
         trend * 0.25
@@ -332,23 +341,38 @@ def evaluate_ticker(
         action = "短期反弹候选"
         conviction = 3
 
-    # Moonshot positions are lottery tickets — never apply core-holding exit
-    # logic (清仓/避免). Worst case is 减仓 (take partial profit), and a strong
-    # mover stays "持有博弹性" so you can ride the 10x dream with house money.
+    # Moonshot positions are lottery tickets — the core-holding Q/R matrix
+    # over-fires on them. BUT the exemption has limits:
+    #   - "避免" is a don't-buy signal: it stays. (The old code flipped it to
+    #     "持有博弹性" on any positive 20d return — turning a negative signal
+    #     into a positive-sounding one. Never again.)
+    #   - "清仓" softens to "减仓" only while the name is NOT in a death
+    #     spiral. Down >50% from the 52w high or 12-1 momentum < -60% is a
+    #     death spiral — the exit signal stands, lottery ticket or not.
+    moonshot_exit_note = ""
     if is_moonshot:
-        if action in {"清仓", "避免"}:
-            # If it still has upward momentum, hold; else trim
-            ret_20d = summary.get("ret_20d") or 0
-            action = "减仓" if ret_20d < 0 else "持有博弹性"
-            conviction = 2
+        dd_52w = summary.get("dd_from_52w_high") or 0.0
+        m121_val = summary.get("momentum_12_1", {}).get("value")
+        death_spiral = dd_52w < -0.50 or (m121_val is not None and m121_val < -0.60)
+        if action == "清仓":
+            if not death_spiral:
+                action = "减仓"
+                conviction = 2
+            else:
+                moonshot_exit_note = (f"距 52w 高 {dd_52w * 100:.0f}% — "
+                                      "深度死亡螺旋, 乐透逻辑不适用, 退出信号有效")
         elif action == "减仓":
-            # A moonshot that ran hard: trim a bit but keep riding
-            action = "持有博弹性"
-            conviction = 2
+            ret_20d = summary.get("ret_20d") or 0
+            if ret_20d > 0 and not death_spiral:
+                # Ran hard with momentum intact: ride with house money
+                action = "持有博弹性"
+                conviction = 2
 
     # Build plain-Chinese support list
     supports = []
     contras = []
+    if moonshot_exit_note:
+        contras.append(moonshot_exit_note)
 
     trend_label = summary.get("trend", {}).get("label", "")
     supports.append(translate_trend(trend_label))
@@ -383,9 +407,10 @@ def evaluate_ticker(
                 details.append(f"利润率 {quality_factor.profit_margin * 100:.0f}%")
             if quality_factor.roe and quality_factor.roe > 0.20:
                 details.append(f"ROE {quality_factor.roe * 100:.0f}%")
-            supports.append(f"基本面优质 ({quality_factor.label}, "
-                            + ", ".join(details) if details
-                            else f"基本面优质 ({quality_factor.label})")
+            supports.append(
+                f"基本面优质 ({quality_factor.label}, {', '.join(details)})"
+                if details else f"基本面优质 ({quality_factor.label})"
+            )
         elif quality_factor.composite_score <= 4:
             details = []
             if quality_factor.profit_margin is not None and quality_factor.profit_margin < 0:
@@ -473,6 +498,7 @@ def evaluate_ticker(
         ticker=ticker,
         category=categorize_hot_tech(ticker),
         action=action,
+        pregate_action=action,
         conviction=conviction,
         quality_score=quality,
         risk_score=risk,
@@ -508,6 +534,14 @@ def apply_regime_gate(recs: list[TickerRecommendation],
                 r.cancel_trigger = "大盘 risk-off — 持有可以, 但暂不追加"
             elif r.action == "试探建仓":
                 r.action = "观望"
+            elif r.action == "短期反弹候选":
+                # Mean-reversion bounces into a systemic down day are knife-
+                # catching — the gate must close this path too (it was the
+                # last $-carrying buy signal that bypassed the regime gate).
+                r.action = "观望"
+                r.suggested_dollars = 0.0
+                r.cancel_trigger = ("大盘 risk-off — 反弹交易暂停, "
+                                    "等体制转好再看反弹候选")
         elif buy_gate == "caution":
             # Just annotate, don't downgrade
             if r.action in ("建仓", "加仓持有"):
@@ -654,7 +688,11 @@ def render_recommendations_for_embed(
                     target = L.target_2r
                     target_note = "2×ATR 目标"
                 upside = (target - current) / current * 100
-                stop = L.stop_sma50
+                # Trend stop = SMA50 when price is above it; if price is
+                # already below SMA50 (possible for 试探建仓), an "SMA50 stop"
+                # would sit ABOVE the entry — fall back to the 2×ATR stop so
+                # the stop is always below price and R/R stays meaningful.
+                stop = L.stop_sma50 if L.stop_sma50 < current else L.stop_tight
                 stop_pct = (stop - current) / current * 100
                 # Reward/Risk ratio = potential upside / potential downside
                 rr = upside / abs(stop_pct) if stop_pct < 0 else 0
@@ -711,12 +749,8 @@ def render_recommendations_for_embed(
             "inline": False,
         })
 
-    # ===== New sells only (don't repeat yesterday's sells) =====
-    # Only show sells that are NEW today (downgraded into 减仓/清仓 today)
+    # ===== Sells (all of today's; header says so) =====
     sell_actions = by_action.get("减仓", []) + by_action.get("清仓", [])
-    new_sells = [r for r in sell_actions if r.ticker in new_in_buy_tickers]
-    # Note: new_in_buy_tickers is overloaded — caller passes new_in_sell here too
-    # (we'll fix this in the wiring; for now sell_filtered uses all sells but limited)
     if sell_actions:
         compact = " · ".join(
             f"**{r.ticker}**({r.action})"

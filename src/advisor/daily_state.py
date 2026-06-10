@@ -13,13 +13,19 @@ STATE_DIR = Path(__file__).resolve().parents[2] / "data" / "state"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# Action upgrade/downgrade rank (higher = more bullish)
+# Action upgrade/downgrade rank (higher = more bullish).
+# Gate-renamed actions sit NEXT TO their ungated origin (等企稳再建仓 ~ 建仓)
+# so a regime-gate toggle does not show up as a fake rating downgrade/upgrade
+# wave in the daily diff.
 ACTION_RANK = {
     "建仓": 9,
+    "等企稳再建仓": 8,     # gated 建仓 — same view, entry deferred
     "加仓持有": 8,
     "试探建仓": 7,
     "持有不加": 6,
+    "持有博弹性": 6,       # moonshot hold
     "观望": 5,
+    "短期反弹候选": 5,     # speculative swing, not a rating change vs 观望
     "观望偏空": 4,
     "减仓": 3,
     "避免": 2,
@@ -50,6 +56,7 @@ def save_snapshot(
         "actions": {
             r.ticker: {
                 "action": r.action,
+                "action_pregate": getattr(r, "pregate_action", "") or r.action,
                 "Q": round(float(r.quality_score), 1),
                 "R": round(float(r.risk_score), 1),
             }
@@ -70,6 +77,10 @@ def save_snapshot(
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                     encoding="utf-8")
     return path
+
+
+def snapshot_exists(d: date) -> bool:
+    return _state_path(d).exists()
 
 
 def load_snapshot(d: date) -> dict | None:
@@ -118,14 +129,17 @@ def compute_diff(today_data: dict, prev: dict | None) -> dict:
         yest = prev_actions.get(t)
         if not yest:
             continue
-        t_rank = ACTION_RANK.get(info["action"], 5)
-        y_rank = ACTION_RANK.get(yest["action"], 5)
+        # Rating moves compare PRE-GATE actions (the signal), so a regime-gate
+        # toggle is not reported as an up/downgrade wave. Old snapshots
+        # without the field fall back to the gated action.
+        t_act = info.get("action_pregate") or info["action"]
+        y_act = yest.get("action_pregate") or yest["action"]
+        t_rank = ACTION_RANK.get(t_act, 5)
+        y_rank = ACTION_RANK.get(y_act, 5)
         if t_rank - y_rank >= 2:
-            upgraded.append({"ticker": t, "from": yest["action"],
-                             "to": info["action"]})
+            upgraded.append({"ticker": t, "from": y_act, "to": t_act})
         elif y_rank - t_rank >= 2:
-            downgraded.append({"ticker": t, "from": yest["action"],
-                               "to": info["action"]})
+            downgraded.append({"ticker": t, "from": y_act, "to": t_act})
         if (info["action"] in buy_actions
                 and yest["action"] not in buy_actions):
             new_in_buy.append({"ticker": t, "action": info["action"]})
