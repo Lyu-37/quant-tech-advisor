@@ -32,6 +32,8 @@ import pandas as pd
 from .indicators import relative_strength
 from .universe import categorize_hot_tech
 from .factors import QualityFactor, PEADSignal
+from .levels import compute_levels
+from . import config
 
 
 @dataclass
@@ -51,6 +53,10 @@ class TickerRecommendation:
     # compares THIS, so a gate toggle (建仓 -> 等企稳再建仓) doesn't show up
     # as a fake rating downgrade wave.
     pregate_action: str = ""
+    # Hysteresis: when today's raw signal upgrades into the buy group but is
+    # awaiting its 2nd-day confirmation, the upgrade is parked here and the
+    # previous action stays published. Persisted in the snapshot.
+    pending_action: str = ""
 
 
 # ---------- 大白话翻译器 ----------
@@ -151,8 +157,9 @@ def translate_action_explanation(action: str) -> str:
 # ---------- 评分函数 ----------
 
 # Risk appetite profiles — shift the action-matrix thresholds.
-# Aggressive: lower quality bar + much higher risk tolerance, so high-momentum
-# high-vol names (IONQ, SOXL, etc.) don't auto-trigger 减仓/清仓.
+# Live values come from configs/advisor.yaml (profiles.*); these are the
+# factory defaults. Changing them goes through the shadow-mode process
+# documented in configs/PARAMS-CHANGELOG.md.
 RISK_PROFILES = {
     "conservative": {"q_high": 65, "q_mid": 40, "r_low": 35, "r_mid": 60,
                      "vol_weight": 0.40, "vol_div": 0.045},
@@ -165,6 +172,41 @@ RISK_PROFILES = {
                      "vol_weight": 0.30, "vol_div": 0.060},
 }
 DEFAULT_PROFILE = "aggressive"
+
+
+def _profile(name: str) -> dict:
+    """Profile thresholds: advisor.yaml override -> code default."""
+    base = RISK_PROFILES.get(name, RISK_PROFILES[DEFAULT_PROFILE])
+    cfg = config.get(f"profiles.{name}", None)
+    if isinstance(cfg, dict):
+        merged = dict(base)
+        merged.update({k: v for k, v in cfg.items() if k in base})
+        return merged
+    return base
+
+
+def size_position(risk_dollars: float, stop_pct: float, action: str) -> float | None:
+    """Risk-budget position sizing: size = risk$ / stop-distance, scaled by
+    action tier, clamped to [min, max].
+
+    Replaces the old fixed dollar table ($60/$45/$20 regardless of the name's
+    volatility — an IONQ and an MSFT position carried identical dollars but
+    3x different risk). Returns None when inputs are unusable (caller falls
+    back to the fixed table).
+    """
+    if risk_dollars is None or risk_dollars <= 0:
+        return None
+    if stop_pct is None or stop_pct < 0.02:   # degenerate stop (flat series)
+        return None
+    tiers = config.get("sizing.tier", {"建仓": 1.00, "加仓持有": 0.75,
+                                       "短期反弹候选": 0.50, "试探建仓": 0.40})
+    tier = tiers.get(action)
+    if tier is None:
+        return None
+    lo = float(config.get("sizing.min_position_cad", 15))
+    hi = float(config.get("sizing.max_position_cad", 60))
+    raw = risk_dollars / stop_pct * float(tier)
+    return float(min(hi, max(lo, round(raw))))
 
 
 def compute_quality(
@@ -222,7 +264,7 @@ def compute_risk(summary: dict, range_pos: float,
     conservative profiles weight vol heavily. Aggressive profiles weight it
     lightly (the user *wants* volatility for upside).
     """
-    p = RISK_PROFILES.get(profile, RISK_PROFILES[DEFAULT_PROFILE])
+    p = _profile(profile)
     vol_weight = p["vol_weight"]
     vol_div = p["vol_div"]
     other = (1.0 - vol_weight)
@@ -250,7 +292,7 @@ def range_position(close: pd.Series, window: int = 252) -> float:
 def pick_action(quality: float, risk: float,
                 profile: str = DEFAULT_PROFILE) -> tuple[str, int]:
     """Return (action_label, conviction 1-5)."""
-    p = RISK_PROFILES.get(profile, RISK_PROFILES[DEFAULT_PROFILE])
+    p = _profile(profile)
     q_high, q_mid = p["q_high"], p["q_mid"]
     r_low, r_mid = p["r_low"], p["r_mid"]
 
@@ -326,6 +368,7 @@ def evaluate_ticker(
     profile: str = DEFAULT_PROFILE,
     is_moonshot: bool = False,
     valuation_tilt: float = 0.0,
+    risk_dollars: float | None = None,
 ) -> TickerRecommendation:
     rs_smh = relative_strength(close, smh_close, window=60)
     rng = range_position(close)
@@ -479,16 +522,21 @@ def evaluate_ticker(
     else:
         cancel = "等下一次每日扫描"
 
-    # Suggested dollars assuming a $150 speculation budget
+    # Suggested dollars. Primary: risk-budget sizing (risk$ / stop distance,
+    # vol-aware via the same stop the Top3 card displays). Fallback when
+    # risk_dollars or a usable stop is unavailable: the old fixed table.
     suggested = None
-    if action == "建仓":
-        suggested = 60.0       # 40% of budget
-    elif action == "加仓持有":
-        suggested = 45.0       # 30%
-    elif action == "试探建仓":
-        suggested = 20.0       # 13%
-    elif action == "短期反弹候选":
-        suggested = 30.0       # 20%, technical swing trade
+    buy_actions_sized = {"建仓", "加仓持有", "试探建仓", "短期反弹候选"}
+    if action in buy_actions_sized:
+        stop_pct = None
+        L = compute_levels(close, ticker)
+        if L is not None and L.current > 0:
+            stop = L.stop_sma50 if L.stop_sma50 < L.current else L.stop_tight
+            stop_pct = abs(stop / L.current - 1)
+        suggested = size_position(risk_dollars, stop_pct, action)
+        if suggested is None:
+            suggested = {"建仓": 60.0, "加仓持有": 45.0,
+                         "试探建仓": 20.0, "短期反弹候选": 30.0}[action]
     elif action == "持有博弹性":
         suggested = 0.0        # already held; ride it, don't add
     elif action in ("持有不加", "观望", "观望偏空", "避免", "减仓", "清仓"):
@@ -559,8 +607,13 @@ def rank_recommendations(
     profile: str = DEFAULT_PROFILE,
     moonshot_set: set | None = None,
     valuations: dict | None = None,
+    risk_dollars: float | None = None,
 ) -> list[TickerRecommendation]:
-    """Build recommendations for all tickers, sorted by conviction × quality."""
+    """Build recommendations for all tickers, sorted by conviction × quality.
+
+    risk_dollars: per-trade risk budget in CAD (e.g. 1% of live portfolio
+    value) — drives risk-based position sizing. None = fixed-size fallback.
+    """
     quality_factors = quality_factors or {}
     pead_signals = pead_signals or {}
     news_summaries = news_summaries or {}
@@ -579,15 +632,59 @@ def rank_recommendations(
             profile=profile,
             is_moonshot=(t in moonshot_set),
             valuation_tilt=(val.tilt if val else 0.0),
+            risk_dollars=risk_dollars,
         )
         recs.append(rec)
-    # Sort: 建仓/加仓 first, then by quality
-    action_priority = {
-        "建仓": 0, "加仓持有": 1, "试探建仓": 2, "短期反弹候选": 3,
-        "持有博弹性": 4, "持有不加": 5, "观望": 6, "观望偏空": 7,
-        "减仓": 8, "避免": 9, "清仓": 10,
-    }
-    recs.sort(key=lambda r: (action_priority.get(r.action, 10), -r.quality_score))
+    recs.sort(key=lambda r: (ACTION_PRIORITY.get(r.action, 10), -r.quality_score))
+    return recs
+
+
+# Display ordering: buys first, exits last.
+ACTION_PRIORITY = {
+    "建仓": 0, "加仓持有": 1, "试探建仓": 2, "短期反弹候选": 3,
+    "持有博弹性": 4, "持有不加": 5, "观望": 6, "观望偏空": 7,
+    "减仓": 8, "避免": 9, "清仓": 10,
+}
+
+_BUY_GROUP = {"建仓", "加仓持有", "试探建仓"}
+
+
+def apply_hysteresis(recs: list[TickerRecommendation],
+                     prev_actions: dict | None) -> list[TickerRecommendation]:
+    """2-day confirmation for upgrades INTO the buy group (anti-whipsaw).
+
+    Deliberately asymmetric: adding risk is slow (a name flapping across the
+    quality threshold must hold its upgrade for 2 consecutive sessions before
+    a buy is published), cutting risk is fast (downgrades/sells publish
+    immediately — never delay an exit signal for cosmetic stability).
+
+    短期反弹候选 is exempt: its 5-day horizon doesn't survive a 2-day delay,
+    and it is already the most heavily filtered + gated path.
+
+    `prev_actions`: yesterday's snapshot["actions"] (carries action_pregate
+    and pending). Call BEFORE apply_regime_gate — hysteresis is signal-level.
+    """
+    if not config.get("hysteresis.enabled", True) or not prev_actions:
+        return recs
+    for r in recs:
+        prev = prev_actions.get(r.ticker)
+        if not prev:
+            continue
+        prev_pub = prev.get("action_pregate") or prev.get("action")
+        raw = r.action
+        if raw in _BUY_GROUP and prev_pub not in _BUY_GROUP:
+            if prev.get("pending") in _BUY_GROUP:
+                continue           # 2nd consecutive buy-group day: confirmed
+            # 1st day of the upgrade: hold yesterday's action, park the signal
+            r.pending_action = raw
+            r.action = prev_pub
+            r.pregate_action = prev_pub
+            r.suggested_dollars = 0.0
+            r.headline = (f"{r.action} · 质量 {r.quality_score:.0f}/100, "
+                          f"风险 {r.risk_score:.0f}/100")
+            r.supports.insert(
+                0, f"[迟滞] 信号已升级为 {raw}, 连续第 2 天确认后才发布买入")
+    recs.sort(key=lambda r: (ACTION_PRIORITY.get(r.action, 10), -r.quality_score))
     return recs
 
 
@@ -708,6 +805,10 @@ def render_recommendations_for_embed(
             reasons_txt = " · ".join(s[:60] for s in reasons[:2])
             dollar = (f"${r.suggested_dollars:.0f} CAD"
                       if r.suggested_dollars else "—")
+            # Small caps trade with 0.5-2% spreads — market orders are a gift
+            # to the market maker. Surface the execution hint on the card.
+            if r.category in {"10x候选", "量子计算"}:
+                dollar += " · 限价单"
 
             # Multi-line clean format with visual hierarchy
             if L:

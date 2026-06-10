@@ -140,11 +140,14 @@ def evaluate_watchlist(watch_cfg: list[dict],
 
 
 def render_watchlist_field(verdicts: list[WatchVerdict],
-                           buy_gate: str = "pass") -> dict | None:
+                           buy_gate: str = "pass",
+                           suppression_note: str | None = None) -> dict | None:
     """Discord embed field for the pullback watchlist.
 
     `buy_gate`: the regime gate. On "temper" (risk-off), 可以入场 must not be
     presented as an actionable entry — the gate covers ALL buy paths.
+    `suppression_note`: fail-closed / circuit-breaker reason — outranks the
+    gate and replaces entry signals with the reason.
     """
     if not verdicts:
         return None
@@ -160,7 +163,10 @@ def render_watchlist_field(verdicts: list[WatchVerdict],
     for v in verdicts:
         tag = icon.get(v.verdict, v.verdict)
         detail = v.detail
-        if v.verdict == "可以入场" and buy_gate == "temper":
+        if v.verdict == "可以入场" and suppression_note:
+            tag = "◆ 到位但买入已抑制"
+            detail = f"价位条件满足, 但 {suppression_note}"
+        elif v.verdict == "可以入场" and buy_gate == "temper":
             tag = "◆ 到位但 risk-off·等体制转好"
             detail = "价位条件满足, 但大盘 risk-off — 闸门关闭, 等体制转好再进"
         arrow = "▲" if v.today_pct > 0 else "▼" if v.today_pct < 0 else "─"

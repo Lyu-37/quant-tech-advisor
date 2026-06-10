@@ -9,8 +9,10 @@ from dataclasses import dataclass
 # Sector ETFs — proxies for the broad semi industry
 SEMI_ETFS = ["SMH", "SOXX", "SOXL"]   # SOXL = 3x leveraged, user holds
 
-# Broad market benchmarks (for relative strength)
-BENCHMARKS = ["SPY", "QQQ"]
+# Broad market benchmarks (for relative strength).
+# QQQE (equal-weight Nasdaq-100) / QQQ ratio = breadth proxy that doesn't
+# depend on our survivor-biased hand-picked universe.
+BENCHMARKS = ["SPY", "QQQ", "QQQE"]
 
 # AI Infrastructure (power + datacenter + components) — second analysis theme
 AI_INFRA_LEADERS = [
@@ -39,8 +41,10 @@ SEMI_LEADERS = [
 # Macro context. yfinance symbols:
 #   ^TNX = CBOE 10-year US Treasury yield index (yfinance returns as actual %)
 #   DX-Y.NYB = US Dollar Index
-#   ^VIX = volatility index
-MACRO = ["^TNX", "DX-Y.NYB", "^VIX"]
+#   ^VIX = volatility index; ^VIX3M = 3-month VIX (term structure:
+#   spot/3M > 1 = backwardation = stress, a far more robust risk-off signal
+#   than any spot-VIX level threshold)
+MACRO = ["^TNX", "DX-Y.NYB", "^VIX", "^VIX3M"]
 
 
 # Cutting-edge sector additions (核电, 光通信, 量子, 机器人/自动化)

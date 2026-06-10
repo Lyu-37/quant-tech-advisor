@@ -51,7 +51,8 @@ def load_cfg(path: Path):
 
 def build_preclose_embed(run_date, data, regime, rs_leaders,
                          guru_map, watch_verdicts, movers,
-                         fresh_warn: str | None = None):
+                         fresh_warn: str | None = None,
+                         buy_suppression: str | None = None):
     fields = []
 
     # 1. Market pulse / regime — should you act today at all?
@@ -66,7 +67,10 @@ def build_preclose_embed(run_date, data, regime, rs_leaders,
     if actionable or near or broken:
         lines = []
         for v in actionable:
-            if regime.buy_gate == "temper":
+            if buy_suppression:
+                lines.append(f"◆ 到位但买入已抑制 `{v.ticker}` ${v.current:.2f} "
+                             f"— {buy_suppression}")
+            elif regime.buy_gate == "temper":
                 lines.append(f"◆ 到位但 risk-off `{v.ticker}` ${v.current:.2f} "
                              f"— 价位满足, 等体制转好再进")
             else:
@@ -98,9 +102,12 @@ def build_preclose_embed(run_date, data, regime, rs_leaders,
             "inline": False,
         })
 
-    # 5. Bottom line — one actionable sentence. Order matters: the gate
-    # outranks the watchlist on BOTH temper and caution.
-    if regime.buy_gate == "temper":
+    # 5. Bottom line — one actionable sentence. Order matters: suppression
+    # outranks the gate, the gate outranks the watchlist.
+    if buy_suppression:
+        bottom = (f"**今日定调**: {buy_suppression} — 今日不给任何操作建议, "
+                  "只读市场状态.")
+    elif regime.buy_gate == "temper":
         bottom = "**今日定调**: risk-off, 收盘前不建议追买. 现金为王, 等明天体制转好."
     elif actionable and regime.buy_gate == "pass":
         names = ", ".join(v.ticker for v in actionable)
@@ -151,7 +158,8 @@ def main():
     holdings, cfg = load_cfg(PROJECT_ROOT / args.config)
     watch_cfg = cfg.get("watchlist", []) or []
 
-    symbols = sorted(set(HOT_TECH + GURU_FOCUS + ["SPY", "QQQ", "^VIX", "^TNX"]
+    symbols = sorted(set(HOT_TECH + GURU_FOCUS
+                         + ["SPY", "QQQ", "QQQE", "^VIX", "^VIX3M", "^TNX"]
                          + [w["ticker"] for w in watch_cfg]))
     print(f"[1/4] Fetching {len(symbols)} symbols...")
     # Always fresh: stale data showing yesterday's crash on an up day is the
@@ -199,9 +207,22 @@ def main():
                     for c in top))
 
     print("[4/4] Discord push...")
+    from src.advisor.ledger import evaluate_speculation_sleeve
+    from src.advisor.portfolio_daily import _fetch_usd_cad
+    from src.advisor import safeguards
+    sleeve = evaluate_speculation_sleeve(data, _fetch_usd_cad(), as_of,
+                                         persist=False)
+    buy_suppression = safeguards.combine(
+        safeguards.data_quality_suppression(
+            fresh_warn, len(symbols) - len(data), len(symbols)),
+        safeguards.breaker_suppression(sleeve),
+    )
+    if buy_suppression:
+        print(f"      [停] 买入建议抑制: {buy_suppression}")
     embed = build_preclose_embed(date.today(), data, regime, rs_leaders,
                                  guru_map, watch_verdicts, movers,
-                                 fresh_warn=fresh_warn)
+                                 fresh_warn=fresh_warn,
+                                 buy_suppression=buy_suppression)
     if args.no_discord:
         print("      (skipped, --no-discord)")
         # Print summary to console

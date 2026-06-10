@@ -162,6 +162,22 @@ def main():
         fx = 1.0 if h.ticker.endswith(".TO") else usd_cad
         h.set_market_value(px * h.shares * fx)
 
+    # ------- buy suppression: fail-closed data quality + circuit breaker ----
+    from src.advisor.ledger import evaluate_speculation_sleeve
+    from src.advisor import safeguards
+    sleeve = evaluate_speculation_sleeve(data, usd_cad, as_of)
+    if sleeve is not None:
+        print(f"      投机桶: 权益 ${sleeve.equity:.0f} "
+              f"(已实现 {sleeve.realized_pnl:+.0f} / 浮动 {sleeve.unrealized_pnl:+.0f}), "
+              f"距高水位 {sleeve.drawdown_pct * 100:.0f}%"
+              + (f" — 熔断至 {sleeve.breaker_until}" if sleeve.breaker_active else ""))
+    buy_suppression = safeguards.combine(
+        safeguards.data_quality_suppression(fresh_warn, n_failed, len(symbols)),
+        safeguards.breaker_suppression(sleeve),
+    )
+    if buy_suppression:
+        print(f"      [停] 买入建议抑制: {buy_suppression}")
+
     # ------- semi sector composite -------
     print("[3/7] Computing semi sector score...")
     smh_df = data["SMH"]
@@ -264,6 +280,14 @@ def main():
           f"{len(market_movers.level_breaks)} level breaks; "
           f"{len(market_movers.new_52w_highs)} new 52w highs")
 
+    # ------- holdings exit-condition watch (local only) -------
+    from src.advisor.holdings_watch import evaluate_holdings, render_holdings_watch
+    holding_alerts = evaluate_holdings(holdings, data)
+    n_fired = sum(1 for a in holding_alerts if a.triggered)
+    if n_fired:
+        fired_names = ", ".join(a.ticker for a in holding_alerts if a.triggered)
+        print(f"      [!] 持仓退出条件触发: {fired_names} — 看本地报告 持仓监察 节")
+
     # ------- portfolio metrics (local only) -------
     print("[8/9] Computing portfolio Greeks...")
     pmetrics = compute_portfolio_metrics(holdings, data)
@@ -317,8 +341,21 @@ def main():
           f"({n_traps} 价值陷阱)")
 
     from src.advisor.universe import MOONSHOT_LEADERS
+    from src.advisor import config as adv_config
     risk_appetite = cfg.get("risk_appetite", "aggressive")
-    print(f"      risk appetite: {risk_appetite}")
+    # Per-trade risk budget = live portfolio value x risk%, drives
+    # stop-distance-based sizing (falls back to fixed table if unavailable).
+    risk_pct = float(adv_config.get("sizing.risk_pct_per_trade", 0.01))
+    risk_dollars = total_value * risk_pct if total_value > 0 else None
+    print(f"      risk appetite: {risk_appetite}"
+          + (f", 单笔风险预算 ${risk_dollars:.0f} CAD"
+             f" (组合市值 ${total_value:.0f} × {risk_pct:.0%})" if risk_dollars else ""))
+    if risk_dollars and risk_dollars > 50:
+        # The budget is derived from portfolio.yaml share counts x live
+        # prices. If it looks too big, the share counts are probably stale —
+        # sizing is still capped by sizing.max_position_cad, but fix the yaml.
+        print("      [!] 风险预算偏大 — 检查 portfolio.yaml 股数是否与真实账户一致 "
+              "(单笔仓位仍被 max_position_cad 封顶)")
     recommendations = rank_recommendations(
         hot_summaries, data, smh_df["close"],
         quality_factors=quality_factors,
@@ -327,9 +364,18 @@ def main():
         profile=risk_appetite,
         moonshot_set=set(MOONSHOT_LEADERS),
         valuations=valuation_data,
+        risk_dollars=risk_dollars,
     )
+    # Hysteresis (signal-level, BEFORE the gate): upgrades into the buy group
+    # need a 2nd consecutive day before they publish — slow to add risk.
+    from src.advisor.recommendations import apply_regime_gate, apply_hysteresis
+    prev_snapshot = find_latest_previous(as_of)
+    recommendations = apply_hysteresis(
+        recommendations, (prev_snapshot or {}).get("actions"))
+    n_pending = sum(1 for r in recommendations if r.pending_action)
+    if n_pending:
+        print(f"      [迟滞] {n_pending} 个买入升级待第 2 天确认")
     # Apply regime gate — temper buy signals on risk-off days
-    from src.advisor.recommendations import apply_regime_gate
     recommendations = apply_regime_gate(recommendations, regime.buy_gate)
     rec_counts = {}
     for r in recommendations:
@@ -337,11 +383,44 @@ def main():
     print(f"      -> {len(recommendations)} recs (gate={regime.buy_gate}): " +
           ", ".join(f"{k}={v}" for k, v in rec_counts.items()))
 
+    # ------- shadow mode: candidate parameters run in parallel -------
+    # Threshold-change discipline (configs/PARAMS-CHANGELOG.md): put candidate
+    # values in configs/advisor.shadow.yaml, watch logs/shadow/ for two weeks,
+    # only then promote to advisor.yaml. Published output is untouched.
+    shadow_path = PROJECT_ROOT / "configs" / "advisor.shadow.yaml"
+    if shadow_path.exists():
+        shadow_cfg = yaml.safe_load(shadow_path.read_text(encoding="utf-8")) or {}
+        with adv_config.override(shadow_cfg):
+            s_regime = detect_regime(data, as_of=as_of)
+            s_recs = rank_recommendations(
+                hot_summaries, data, smh_df["close"],
+                quality_factors=quality_factors, pead_signals=pead_signals,
+                news_summaries=news_summaries, profile=risk_appetite,
+                moonshot_set=set(MOONSHOT_LEADERS), valuations=valuation_data,
+                risk_dollars=risk_dollars)
+            s_recs = apply_hysteresis(s_recs, (prev_snapshot or {}).get("actions"))
+            s_recs = apply_regime_gate(s_recs, s_regime.buy_gate)
+        pub_map = {r.ticker: r.action for r in recommendations}
+        sh_map = {r.ticker: r.action for r in s_recs}
+        changes = sorted((t, pub_map[t], sh_map[t])
+                         for t in pub_map if t in sh_map and pub_map[t] != sh_map[t])
+        shadow_dir = PROJECT_ROOT / "logs" / "shadow"
+        shadow_dir.mkdir(parents=True, exist_ok=True)
+        lines = [f"# shadow diff · {as_of.isoformat()}",
+                 f"体制: 发布 {regime.label}/{regime.buy_gate} vs "
+                 f"shadow {s_regime.label}/{s_regime.buy_gate}",
+                 f"动作变化 {len(changes)} 个:"]
+        lines += [f"- {t}: {a} -> {b}" for t, a, b in changes]
+        (shadow_dir / f"shadow-{as_of.isoformat()}.md").write_text(
+            "\n".join(lines), encoding="utf-8")
+        print(f"      [shadow] 候选参数: gate {regime.buy_gate}->{s_regime.buy_gate}, "
+              f"{len(changes)} 个动作不同 (logs/shadow/)")
+
     # ------- snapshot diff (today vs most recent previous) -------
     # Keyed by the DATA's trading date (as_of), not the wall-clock date — a
     # weekend/holiday run must not mint a phantom non-trading-day snapshot.
-    print("[8c/9] Loading previous snapshot for diff...")
-    prev_snapshot = find_latest_previous(as_of)
+    # (prev_snapshot already loaded above for hysteresis.)
+    print("[8c/9] Computing diff vs previous snapshot...")
     today_data = {
         "date": as_of.isoformat(),
         "composite_semi": float(semi_score.composite_0_100),
@@ -350,6 +429,7 @@ def main():
         "actions": {
             r.ticker: {"action": r.action,
                        "action_pregate": r.pregate_action or r.action,
+                       "pending": r.pending_action or None,
                        "Q": round(float(r.quality_score), 1),
                        "R": round(float(r.risk_score), 1)}
             for r in recommendations
@@ -402,8 +482,10 @@ def main():
     # Compose final report. Recommendations go FIRST (most actionable),
     # then context (sectors/news/levels), then portfolio Greeks at the end.
     head, sep, tail = semi_md.partition("## 免责声明")
+    holdings_md = render_holdings_watch(holding_alerts)
     body = (
-        recs_md + "\n"
+        holdings_md + "\n"          # 持仓退出监察最前 — 已持有的优先于该买什么
+        + recs_md + "\n"
         + ai_infra_md + "\n"
         + earnings_md + "\n"
         + levels_md + "\n"
@@ -439,6 +521,7 @@ def main():
         data_as_of=as_of,
         freshness_warning_text=fresh_warn,
         fetch_note=fetch_note,
+        buy_suppression=buy_suppression,
     )
 
     if args.no_discord:

@@ -317,6 +317,49 @@ def test_watchlist_leveraged_floor_tighter():
     assert v_lite.in_buy_zone
 
 
+# ---- Item 3: 信号迟滞 (slow to add risk, fast to cut) ----
+
+def test_hysteresis_first_day_upgrade_held():
+    from src.advisor.recommendations import apply_hysteresis
+    rec = _rec("建仓", 60.0)
+    rec.pregate_action = "建仓"
+    prev = {"TEST": {"action": "观望", "action_pregate": "观望", "pending": None}}
+    out = apply_hysteresis([rec], prev)[0]
+    assert out.action == "观望", "升级第 1 天就发布了买入"
+    assert out.pending_action == "建仓"
+    assert out.suggested_dollars == 0.0
+
+
+def test_hysteresis_second_day_confirms():
+    from src.advisor.recommendations import apply_hysteresis
+    rec = _rec("建仓", 60.0)
+    rec.pregate_action = "建仓"
+    prev = {"TEST": {"action": "观望", "action_pregate": "观望",
+                     "pending": "建仓"}}
+    out = apply_hysteresis([rec], prev)[0]
+    assert out.action == "建仓", "第 2 天确认未放行"
+    assert out.suggested_dollars == 60.0
+
+
+def test_hysteresis_never_delays_exits():
+    from src.advisor.recommendations import apply_hysteresis
+    rec = _rec("清仓", 0.0)
+    rec.pregate_action = "清仓"
+    prev = {"TEST": {"action": "建仓", "action_pregate": "建仓", "pending": None}}
+    out = apply_hysteresis([rec], prev)[0]
+    assert out.action == "清仓", "卖出信号被迟滞延迟 — 绝不允许"
+
+
+def test_hysteresis_within_buy_group_immediate():
+    from src.advisor.recommendations import apply_hysteresis
+    rec = _rec("建仓", 60.0)
+    rec.pregate_action = "建仓"
+    prev = {"TEST": {"action": "加仓持有", "action_pregate": "加仓持有",
+                     "pending": None}}
+    out = apply_hysteresis([rec], prev)[0]
+    assert out.action == "建仓"     # 组内变化不需要确认
+
+
 # ---------- M7: gate toggle must not fake rating changes ----------
 
 def _snap(actions: dict) -> dict:
@@ -414,6 +457,131 @@ DEEP_VALUE_INFO = {
     "netIncomeToCommon": 9e9, "priceToSalesTrailing12Months": 2.5,
     "grossMargins": 0.45, "operatingMargins": 0.30, "returnOnEquity": 0.40,
 }
+
+
+# ---- Item 2: 风险预算 sizing ----
+
+def test_size_position_inverse_to_stop_width():
+    from src.advisor.recommendations import size_position
+    tight = size_position(12.0, 0.08, "建仓")    # 8% 止损 -> 150 -> cap 60
+    wide = size_position(12.0, 0.40, "建仓")     # 40% 止损 -> 30
+    assert tight == 60.0
+    assert wide == 30.0
+    assert wide < tight, "止损越宽仓位必须越小 (风险恒定)"
+    # 层级折扣: 试探建仓只拿 0.4 倍
+    probe = size_position(12.0, 0.40, "试探建仓")
+    assert probe < wide
+    # 摩擦下限: 算出来低于 $15 也按 $15 (或者干脆别交易)
+    tiny = size_position(12.0, 0.40, "试探建仓")
+    assert tiny >= 15.0
+    # 不可用输入 -> None (调用方回退固定表)
+    assert size_position(None, 0.1, "建仓") is None
+    assert size_position(12.0, 0.005, "建仓") is None   # 止损距离退化
+    assert size_position(12.0, 0.1, "观望") is None
+
+
+# ---- Item 6: config override (shadow mode) ----
+
+def test_config_override_layering():
+    from src.advisor import config
+    base = config.get("regime.crash_vix_level", 28)
+    with config.override({"regime": {"crash_vix_level": 99}}):
+        assert config.get("regime.crash_vix_level", 28) == 99
+        # 未覆盖的 key 落回 文件/默认
+        assert config.get("regime.crash_spy_pct", -0.02) == -0.02
+    assert config.get("regime.crash_vix_level", 28) == base
+
+
+def test_config_profiles_respected():
+    from src.advisor import config
+    from src.advisor.recommendations import pick_action
+    # shadow 把 aggressive 的 q_high 提到 90 -> 原本的 建仓 变 试探/观望
+    with config.override({"profiles": {"aggressive":
+                                       {"q_high": 90, "q_mid": 42,
+                                        "r_low": 48, "r_mid": 77}}}):
+        action, _ = pick_action(quality=70, risk=30, profile="aggressive")
+        assert action != "建仓"
+    action2, _ = pick_action(quality=70, risk=30, profile="aggressive")
+    assert action2 == "建仓"
+
+
+# ---- Item 2b: 投机桶熔断 ----
+
+def test_circuit_breaker_trips_and_holds():
+    from src.advisor.ledger import evaluate_speculation_sleeve, Trade
+    from datetime import timedelta
+    # 预算 150, 买 10 股 @ $10 USD, 现价 $5.5 -> 浮亏 62 CAD (-41%) -> 熔断
+    trades = [Trade(date=date(2026, 6, 1), ticker="IONQ", side="buy",
+                    shares=10.0, price=10.0, currency="USD")]
+    data = {"IONQ": flat_df(5.5)}
+    st = evaluate_speculation_sleeve(data, usd_cad=1.38, as_of=date(2026, 6, 9),
+                                     trades=trades, state={}, persist=False)
+    assert st.breaker_active, f"权益 {st.equity:.0f} 距高水位回撤未触发熔断"
+    assert st.breaker_until == date(2026, 6, 9) + timedelta(days=28)
+
+    # 浮亏 ~-21% (< 25% 阈值): 不熔断
+    data_ok = {"IONQ": flat_df(7.75)}
+    st2 = evaluate_speculation_sleeve(data_ok, usd_cad=1.38, as_of=date(2026, 6, 9),
+                                      trades=trades, state={}, persist=False)
+    assert not st2.breaker_active
+
+    # 冷却期已过: 解除
+    st3 = evaluate_speculation_sleeve(data_ok, usd_cad=1.38, as_of=date(2026, 8, 1),
+                                      trades=trades,
+                                      state={"hwm": 150.0, "until": "2026-07-08"},
+                                      persist=False)
+    assert not st3.breaker_active
+
+
+def test_breaker_fifo_realized_pnl():
+    from src.advisor.ledger import evaluate_speculation_sleeve, Trade
+    trades = [
+        Trade(date=date(2026, 6, 1), ticker="X", side="buy",
+              shares=10, price=10.0, currency="CAD"),
+        Trade(date=date(2026, 6, 5), ticker="X", side="sell",
+              shares=10, price=7.0, currency="CAD"),   # 实现 -30
+    ]
+    st = evaluate_speculation_sleeve({}, usd_cad=1.38, as_of=date(2026, 6, 9),
+                                     trades=trades, state={}, persist=False)
+    assert abs(st.realized_pnl - (-30.0)) < 0.01
+    assert st.open_positions == []
+
+
+# ---- Item 5: fail-closed ----
+
+def test_data_quality_suppression():
+    from src.advisor import safeguards
+    assert safeguards.data_quality_suppression(None, 0, 80) is None
+    assert safeguards.data_quality_suppression("数据截至...", 0, 80) is not None
+    assert safeguards.data_quality_suppression(None, 8, 80) is not None  # 10% 失败
+    assert safeguards.data_quality_suppression(None, 2, 80) is None     # 2.5% 容忍
+    combined = safeguards.combine("a", None, "b")
+    assert combined == "a; b"
+    assert safeguards.combine(None, None) is None
+
+
+# ---- Item 4: VIX 期限结构 ----
+
+def _flat(price, n=120, end="2026-06-09"):
+    return pd.DataFrame({"close": [price] * n}, index=bdays(n, end))
+
+
+def test_vix_term_structure_backwardation_forces_caution():
+    n = 120
+    closes = list(np.linspace(90, 99, n - 1)) + [100.0]   # 强势上行
+    spy = pd.DataFrame({"close": closes}, index=bdays(n))
+    # 现货 15 / 3M 16.5 (ratio 0.91 contango 正常) -> pass
+    r_normal = detect_regime({"SPY": spy, "^VIX": _flat(15.0),
+                              "^VIX3M": _flat(16.5)})
+    assert r_normal.buy_gate == "pass"
+    # 现货 17 / 3M 16 (ratio 1.06 轻度倒挂, 现货水平本身完全无害) -> 至多 caution
+    r_back = detect_regime({"SPY": spy, "^VIX": _flat(17.0),
+                            "^VIX3M": _flat(16.0)})
+    assert r_back.buy_gate != "pass", "VIX 期限结构倒挂未压制闸门"
+    # 现货 17.5 / 3M 16 (ratio 1.09 深度倒挂) -> temper, 即使现货才 17.5
+    r_deep = detect_regime({"SPY": spy, "^VIX": _flat(17.5),
+                            "^VIX3M": _flat(16.0)})
+    assert r_deep.buy_gate == "temper"
 
 
 def test_lynch_discounts_low_base_growth():

@@ -188,12 +188,16 @@ def build_scanner_embed(
     data_as_of=None,
     freshness_warning_text: str | None = None,
     fetch_note: str = "",
+    buy_suppression: str | None = None,
 ) -> dict:
     """Return kwargs dict ready for discord_push.send_embed.
 
     data_as_of / freshness_warning_text: the run's true data date and, when it
     is NOT the expected latest session, a loud warning to lead the embed with.
     fetch_note: data-quality note for the footer ("78/80 数据源成功" etc.).
+    buy_suppression: fail-closed / circuit-breaker reason. When set, every
+    dollar-carrying buy field (Top3 / 反弹候选 / moonshot 试水 / watchlist
+    入场) is replaced by the reason — market state still renders.
     """
     earnings_events = earnings_events or []
     action_levels = action_levels or []
@@ -340,6 +344,9 @@ def build_scanner_embed(
     stale_banner = ""
     if freshness_warning_text:
         stale_banner = f"**[!] {freshness_warning_text}**\n\n"
+    if buy_suppression:
+        stale_banner += (f"**[停] 今日买入建议已全部抑制: {buy_suppression} — "
+                         "以下只读市场状态, 不要操作**\n\n")
     day_word = "今日" if not freshness_warning_text else f"{data_as_of} (最近交易日)"
 
     desc = (
@@ -366,10 +373,12 @@ def build_scanner_embed(
         fields.append(render_regime_field(regime, rs_leaders))
 
     # ===== 第二: 你的回调买点 watchlist (最个性化+可操作) =====
-    # Gate-aware: on risk-off the 可以入场 lines render as "等体制转好".
+    # Gate-aware: on risk-off the 可以入场 lines render as "等体制转好";
+    # suppression (data quality / circuit breaker) outranks the gate.
     watch_field = render_watchlist_field(
         watch_verdicts,
         buy_gate=(regime.buy_gate if regime is not None else "pass"),
+        suppression_note=buy_suppression,
     )
     if watch_field:
         fields.append(watch_field)
@@ -395,11 +404,22 @@ def build_scanner_embed(
         new_stretched_set = set(diff.get("new_stretched", []))
 
     # ===== 然后: Top 3 高信号买入卡 (含目标价 + 上行空间) =====
-    fields.extend(render_recommendations_for_embed(
-        recommendations, speculation_budget,
-        action_levels=action_levels,
-        new_in_buy_tickers=new_in_buy_set,
-    ))
+    # Fail-closed: under suppression the buy cards do not render at all —
+    # a notice field takes their place.
+    if buy_suppression:
+        fields.append({
+            "name": "[停] 买入建议已抑制",
+            "value": (f"{buy_suppression}.\n"
+                      "_今日 Top3 / 反弹候选 / 10x 试水全部不显示 — "
+                      "坏数据或熔断期的买入建议比没有建议更危险._"),
+            "inline": False,
+        })
+    else:
+        fields.extend(render_recommendations_for_embed(
+            recommendations, speculation_budget,
+            action_levels=action_levels,
+            new_in_buy_tickers=new_in_buy_set,
+        ))
 
     # ===== 分析师共识 (华尔街目标价 + 空间) =====
     if analyst_field:
@@ -428,15 +448,18 @@ def build_scanner_embed(
                 flags[:18],
             ))
         gate_temper = regime is not None and regime.buy_gate == "temper"
-        if gate_temper:
+        if buy_suppression:
+            moonshot_tail = f"_买入已抑制 ({buy_suppression}) — 仅观察._"
+        elif gate_temper:
             moonshot_tail = ("_大盘 risk-off — 今日仅观察, 不建议试水. "
                              "等体制转好再看这张表._")
         else:
             moonshot_tail = ("_这些标的: 高赔率 / 高失败率, 单笔 $30-50 试水, "
-                             "不超过组合 5%_")
+                             "不超过组合 5%. **只用限价单** — 小盘点差 0.5-2%, "
+                             "市价单是白送._")
         fields.append({
             "name": ("[M] 10x 候选 (冷门小盘 · 单独评分 · 极高波动)"
-                     + (" · risk-off 暂停操作" if gate_temper else "")),
+                     + (" · 暂停操作" if (gate_temper or buy_suppression) else "")),
             "value": (_table_block(rows,
                                    ("Ticker", "主题", "60d", "分", "档", "警示"),
                                    (8, 8, 7, 5, 9, 19))

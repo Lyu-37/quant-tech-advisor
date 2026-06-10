@@ -19,8 +19,8 @@ import yfinance as yf
 
 
 NON_FUNDAMENTAL_SYMBOLS = {
-    "SMH", "SOXX", "SOXL", "QQQ", "XLK", "TQQQ", "TECL", "SPY",
-    "VDY.TO", "^TNX", "^VIX", "DX-Y.NYB", "QTUM", "CHPS.TO",
+    "SMH", "SOXX", "SOXL", "QQQ", "QQQE", "XLK", "TQQQ", "TECL", "SPY",
+    "VDY.TO", "^TNX", "^VIX", "^VIX3M", "DX-Y.NYB", "QTUM", "CHPS.TO",
 }
 
 

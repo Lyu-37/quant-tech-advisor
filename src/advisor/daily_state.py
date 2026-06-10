@@ -57,6 +57,7 @@ def save_snapshot(
             r.ticker: {
                 "action": r.action,
                 "action_pregate": getattr(r, "pregate_action", "") or r.action,
+                "pending": getattr(r, "pending_action", "") or None,
                 "Q": round(float(r.quality_score), 1),
                 "R": round(float(r.risk_score), 1),
             }

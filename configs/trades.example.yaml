@@ -1,0 +1,28 @@
+# 交易日志模板 — 复制为 configs/trades.yaml (gitignored, 个人数据) 后开始记录.
+#
+# 用途:
+#   1. 投机桶熔断: daily brief 每天按此台账 mark-to-market, 距高水位回撤超过
+#      advisor.yaml `breaker.drawdown_pct` -> 自动暂停所有新买入建议 N 天
+#   2. 问责回路: scripts/evaluate_predictions.py 把你的实际成交和系统当日信号
+#      对齐, 输出 "系统说的 vs 你做的" 差异 — 这个 gap 比信号本身更有信息量
+#
+# 字段:
+#   date     成交日 (YYYY-MM-DD)
+#   ticker   yfinance 代码 (TSX 加 .TO)
+#   side     buy / sell
+#   shares   股数 (支持小数股)
+#   price    成交价 (原币种)
+#   currency USD (默认) / CAD
+#   bucket   speculation (默认, 计入熔断) / core (核心仓, 不计入熔断)
+#   note     一行论点: 为什么买 + 什么情况认错 (强制自己写, 这是日志的真正价值)
+
+trades: []
+# trades:
+#   - date: 2026-06-05
+#     ticker: IONQ
+#     side: buy
+#     shares: 0.8
+#     price: 35.20
+#     currency: USD
+#     bucket: speculation
+#     note: "量子主题动量 + 系统建仓信号; 跌破 $30 认错"

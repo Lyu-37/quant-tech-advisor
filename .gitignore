@@ -19,6 +19,8 @@ results/sector_reports/
 # personal financial data — never commit
 configs/portfolio.yaml
 configs/portfolio.*.yaml
+configs/trades.yaml
+configs/advisor.shadow.yaml
 # but DO commit the example template (negation must come after the rule above)
 !configs/portfolio.example.yaml
 
@@ -35,3 +37,8 @@ logs/
 .DS_Store
 .idea/
 .vscode/
+
+# weekly eval reports join personal trades against signals — keep local
+results/eval/
+results/*.docx
+logs/shadow/

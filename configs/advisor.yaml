@@ -1,0 +1,57 @@
+# Advisor 全部可调参数 — 单一真相源.
+# 规则 (见 PARAMS-CHANGELOG.md):
+#   1. 改任何值必须在 PARAMS-CHANGELOG.md 记一条 (日期 + 改了什么 + 为什么)
+#   2. 改信号类阈值 (regime/profiles) 必须先 shadow 两周:
+#      把候选值写进 configs/advisor.shadow.yaml (只写改动的 key),
+#      daily_brief 会每天并行计算并把差异写到 logs/shadow/, 两周后看 diff 再切换
+#   3. 代码里这些值都有同样的默认 — 删掉本文件系统照常跑 (工厂设置)
+
+# ---- 市场体制 / 买入闸门 ----
+regime:
+  crash_spy_pct: -0.02        # SPY 单日跌幅 <= 此值 -> 系统性大跌
+  crash_vix_chg: 0.25         # VIX 单日涨幅 > 此值 -> 系统性大跌
+  crash_vix_level: 28         # VIX 现货 >= 此值 -> 系统性大跌
+  # VIX 期限结构 (现货/3个月): 正常 contango ~0.9; 倒挂 = 市场买近期保护 = 压力
+  term_ratio_caution: 1.00    # VIX/VIX3M > 此值 -> 扣分 + 闸门至多 caution
+  term_ratio_crash: 1.08      # 深度倒挂 -> 直接 temper (补慢速阴跌盲区)
+  gate_pass_score: 62         # score >= 此值 -> risk_on (买入信号放行)
+  gate_caution_score: 42      # score >= 此值 -> neutral, 否则 risk_off
+  # 等权/市值权比值 60 日趋势 (QQQE/QQQ): 等权跑输 = 广度收窄
+  breadth_ratio_warn: -0.03
+
+# ---- 风险档位矩阵 (Q/R 动作切点) ----
+# 2026-06-10 审计结论: 这些切点从未被回测, 视为"作者直觉"; 改动走 shadow 流程
+profiles:
+  conservative: {q_high: 65, q_mid: 40, r_low: 35, r_mid: 60, vol_weight: 0.40, vol_div: 0.045}
+  balanced:     {q_high: 62, q_mid: 40, r_low: 42, r_mid: 67, vol_weight: 0.35, vol_div: 0.052}
+  aggressive:   {q_high: 57, q_mid: 42, r_low: 48, r_mid: 77, vol_weight: 0.30, vol_div: 0.060}
+
+# ---- 仓位 sizing (风险预算反推, 替代固定金额表) ----
+sizing:
+  risk_pct_per_trade: 0.01    # 单笔风险 = 组合总值的 1%
+  max_position_cad: 60        # 单笔上限 (投机预算 $150 的 40%)
+  min_position_cad: 15        # 低于此值的仓位不值得交易 (换汇摩擦 ~3% 往返)
+  # 动作层级系数: 风险预算先按止损距离反推, 再按信号强度打折
+  tier:
+    建仓: 1.00
+    加仓持有: 0.75
+    短期反弹候选: 0.50
+    试探建仓: 0.40
+
+# ---- 账户级熔断 (investing sleeve circuit breaker) ----
+breaker:
+  speculation_budget_cad: 150   # 投机桶基准资金
+  drawdown_pct: 0.25            # 桶权益距高水位 -25% -> 熔断
+  cooldown_days: 28             # 熔断后暂停新买入的天数
+
+# ---- 信号迟滞 (anti-whipsaw) ----
+hysteresis:
+  enabled: true
+  # 只对 "升级进买入组" 做 2 日确认 (慢加风险);
+  # 降级/卖出信号立即发布 (快减风险) — 方向性不对称是有意的
+  confirm_days: 2
+
+# ---- 数据质量 fail-closed ----
+data_quality:
+  fail_closed: true           # 数据不达标 -> 抑制全部买入字段 (而非仅警告)
+  max_failure_rate: 0.05      # 取数失败比例超过 5% 视为不达标

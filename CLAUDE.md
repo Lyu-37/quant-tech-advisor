@@ -96,3 +96,16 @@ pytest tests/            # 跑测试
 6. **snapshot 是预测历史记录**: 按 as-of 交易日存, 盘前重跑禁止覆写已存在的 snapshot(evaluate_predictions 依赖它)。
 
 7. **关键回归测试在 `tests/test_advisor_critical.py`** — 改 watchlist/regime/gate/factors/calendar 任何一处, 先跑 `pytest tests/`。
+
+## 2026-06-10 二期加固 (从业者设置, 8 项)
+
+1. **预注册评审判据**: 建仓类信号 20d 超额收益 (vs QQQ) 是唯一主指标, N>=30 有效;
+   连续两个季度 <=0 -> 系统降级为仅状态描述。规则在 configs/PARAMS-CHANGELOG.md, 不许事后改。
+   每周评估: `scripts/evaluate_predictions.py` (周五任务: install_weekly_eval_task.ps1)。
+2. **仓位 = 风险预算 / 止损距离** (`size_position`), 不再是固定金额表; 参数在 advisor.yaml sizing 节。
+3. **迟滞不对称**: 升级进买入组需连续 2 天确认; 卖出/降级永不延迟。改这条逻辑前想清楚方向性。
+4. **VIX 期限结构** (^VIX/^VIX3M) > 1.0 封顶 caution, > 1.08 直接 temper — 不要删, 它补的是慢速阴跌盲区。
+5. **fail-closed**: 数据不达标或熔断期, 一切带金额字段被 buy_suppression 替换 — 新增任何买入展示路径必须接它。
+6. **投机桶熔断**: configs/trades.yaml 台账驱动, 距高水位 -25% 停买 28 天, 状态在 data/state/circuit_breaker.json。
+7. **参数全部在 configs/advisor.yaml**; 改阈值 = PARAMS-CHANGELOG 记录 + advisor.shadow.yaml 影子跑两周。
+8. **yfinance 钉死 ==1.3.0**; 升级是季度动作: 改 pin -> pytest -> smoke -> commit, 不许顺手升。

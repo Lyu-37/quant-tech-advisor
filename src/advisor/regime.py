@@ -21,6 +21,7 @@ from datetime import date
 import pandas as pd
 
 from .universe import HOT_TECH
+from . import config
 
 
 @dataclass
@@ -37,6 +38,8 @@ class MarketRegime:
     buy_gate: str               # "pass" / "caution" / "temper"
     summary: str                # plain-Chinese one-liner
     detail: list                # bullet reasons
+    vix_term_ratio: float | None = None   # VIX / VIX3M; >1 = backwardation
+    breadth_ratio_60d: float | None = None  # QQQE/QQQ 60d trend
 
 
 def _today_change(df: pd.DataFrame, as_of: date | None = None) -> float | None:
@@ -71,12 +74,32 @@ def detect_regime(data: dict[str, pd.DataFrame],
     spy = data.get("SPY")
     qqq = data.get("QQQ")
     vix = data.get("^VIX")
+    vix3m = data.get("^VIX3M")
+    qqqe = data.get("QQQE")
     tnx = data.get("^TNX")
 
     spy_today = _today_change(spy, as_of)
     qqq_today = _today_change(qqq, as_of)
     vix_level = float(vix["close"].iloc[-1]) if vix is not None and not vix.empty else None
     vix_change = _today_change(vix, as_of)
+
+    # VIX term structure: spot/3M. Contango (~0.9) is normal; >1 means the
+    # market pays MORE for near-term protection = stress. Catches the
+    # slow-grind selloff a spot-level threshold misses for days.
+    vix_term_ratio = None
+    if (vix_level is not None and vix3m is not None and not vix3m.empty
+            and float(vix3m["close"].iloc[-1]) > 0):
+        vix_term_ratio = vix_level / float(vix3m["close"].iloc[-1])
+
+    # Equal-weight vs cap-weight breadth (QQQE/QQQ 60d trend) — a breadth
+    # read that does not depend on our survivor-biased ticker list.
+    breadth_ratio_60d = None
+    if (qqqe is not None and qqq is not None
+            and len(qqqe) > 60 and len(qqq) > 60):
+        ratio_now = float(qqqe["close"].iloc[-1]) / float(qqq["close"].iloc[-1])
+        ratio_60 = float(qqqe["close"].iloc[-61]) / float(qqq["close"].iloc[-61])
+        if ratio_60 > 0:
+            breadth_ratio_60d = ratio_now / ratio_60 - 1
 
     spy_vs_sma50 = None
     if spy is not None and len(spy) >= 50:
@@ -139,21 +162,42 @@ def detect_regime(data: dict[str, pd.DataFrame],
     if yield_chg_1w is not None and yield_chg_1w > 0.15:
         score -= 8; detail.append(f"10y 利率 1 周升 {yield_chg_1w * 100:+.0f}bp (压制成长)")
 
+    # VIX term structure
+    term_caution = config.get("regime.term_ratio_caution", 1.00)
+    term_crash = config.get("regime.term_ratio_crash", 1.08)
+    term_stressed = vix_term_ratio is not None and vix_term_ratio > term_caution
+    if term_stressed:
+        score -= 12
+        detail.append(f"VIX 期限结构倒挂 ({vix_term_ratio:.2f} > {term_caution:.2f}) — "
+                      "市场在抢近期保护")
+
+    # Equal-weight breadth
+    breadth_warn = config.get("regime.breadth_ratio_warn", -0.03)
+    if breadth_ratio_60d is not None and breadth_ratio_60d < breadth_warn:
+        score -= 6
+        detail.append(f"等权/市值权 60d {breadth_ratio_60d * 100:+.1f}% — 广度收窄, 靠少数权重股撑")
+
     score = max(0, min(100, score))
 
     # ----- Classify -----
-    crash = (spy_today is not None and spy_today <= -0.02) or \
-            (vix_change is not None and vix_change > 0.25) or \
-            (vix_level is not None and vix_level >= 28)
+    crash = (spy_today is not None
+             and spy_today <= config.get("regime.crash_spy_pct", -0.02)) or \
+            (vix_change is not None
+             and vix_change > config.get("regime.crash_vix_chg", 0.25)) or \
+            (vix_level is not None
+             and vix_level >= config.get("regime.crash_vix_level", 28)) or \
+            (vix_term_ratio is not None and vix_term_ratio > term_crash)
+    gate_pass = config.get("regime.gate_pass_score", 62)
+    gate_caution = config.get("regime.gate_caution_score", 42)
     if crash:
         label = "系统性大跌"
         buy_gate = "temper"
         summary = "今天是 risk-off 大跌 — 不要追买入信号, 等企稳再说"
-    elif score >= 62:
+    elif score >= gate_pass:
         label = "risk_on"
         buy_gate = "pass"
         summary = "风险偏好正常 — 买入信号可正常参考"
-    elif score >= 42:
+    elif score >= gate_caution:
         label = "neutral"
         buy_gate = "caution"
         summary = "市场中性偏谨慎 — 买入信号留意, 分批不梭哈"
@@ -161,6 +205,12 @@ def detect_regime(data: dict[str, pd.DataFrame],
         label = "risk_off"
         buy_gate = "temper"
         summary = "risk-off 环境 — 买入信号打折, 优先看防御 / 抗跌标的"
+
+    # Term-structure backwardation caps the gate at caution even when the
+    # score survives — backwardation days are when "buy the dip" hurts most.
+    if term_stressed and buy_gate == "pass":
+        buy_gate = "caution"
+        summary = "分数尚可但 VIX 期限结构倒挂 — 买入降级为谨慎"
 
     # Fail-safe: if the gate's PRIMARY inputs are missing (VIX or SPY failed
     # to fetch), the score above silently lost its biggest penalty terms and
@@ -181,6 +231,8 @@ def detect_regime(data: dict[str, pd.DataFrame],
         breadth_above_sma50=breadth, spy_vs_sma50=spy_vs_sma50,
         yield_chg_1w=yield_chg_1w,
         buy_gate=buy_gate, summary=summary, detail=detail,
+        vix_term_ratio=vix_term_ratio,
+        breadth_ratio_60d=breadth_ratio_60d,
     )
 
 
