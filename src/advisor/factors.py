@@ -20,7 +20,8 @@ import yfinance as yf
 
 NON_FUNDAMENTAL_SYMBOLS = {
     "SMH", "SOXX", "SOXL", "QQQ", "QQQE", "XLK", "TQQQ", "TECL", "SPY",
-    "VDY.TO", "VFV.TO", "QQQX", "XQQ.TO", "ZQQ.TO", "QQC.TO",
+    "VDY.TO", "VFV.TO", "QQQX", "QQQX.NE", "QQQX.TO",
+    "XQQ.TO", "ZQQ.TO", "QQC.TO",
     # Cboe-Canada CDRs (Wealthsimple): price series only, no fundamentals
     "BRK.NE", "MSFT.NE", "AMD.NE", "GOOG.NE",
     "^TNX", "^VIX", "^VIX3M", "DX-Y.NYB", "QTUM", "CHPS.TO",
