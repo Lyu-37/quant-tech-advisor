@@ -281,6 +281,13 @@ def main():
           f"{len(market_movers.level_breaks)} level breaks; "
           f"{len(market_movers.new_52w_highs)} new 52w highs")
 
+    # ------- IPS target-allocation drift (local only) -------
+    from src.advisor.ips_monitor import evaluate_ips_drift, render_ips_drift
+    ips_rows = evaluate_ips_drift(holdings, cfg.get("ips_targets"))
+    n_out = sum(1 for r in ips_rows if r.out_of_band)
+    if n_out:
+        print(f"      [IPS] {n_out} 个资产组偏离目标超带宽 — 看本地报告")
+
     # ------- holdings exit-condition watch (local only) -------
     from src.advisor.holdings_watch import evaluate_holdings, render_holdings_watch
     holding_alerts = evaluate_holdings(holdings, data)
@@ -493,8 +500,11 @@ def main():
     # then context (sectors/news/levels), then portfolio Greeks at the end.
     head, sep, tail = semi_md.partition("## 免责声明")
     holdings_md = render_holdings_watch(holding_alerts)
+    ips_md = render_ips_drift(
+        ips_rows, float((cfg.get("ips_targets") or {}).get("band_pp", 5)))
     body = (
-        holdings_md + "\n"          # 持仓退出监察最前 — 已持有的优先于该买什么
+        ips_md + "\n"               # IPS 偏离 / 部署进度最前
+        + holdings_md + "\n"        # 持仓退出监察 — 已持有的优先于该买什么
         + recs_md + "\n"
         + ai_infra_md + "\n"
         + earnings_md + "\n"

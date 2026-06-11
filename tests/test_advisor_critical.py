@@ -484,6 +484,29 @@ def test_size_position_inverse_to_stop_width():
         assert size_position(12.0, 0.1, "观望") is None
 
 
+# ---- IPS drift monitor ----
+
+def test_ips_drift_detection():
+    from src.advisor.ips_monitor import evaluate_ips_drift
+    from src.advisor.universe import Holding
+    h1 = Holding("VFV.TO", 10, 100, "core"); h1.set_market_value(700.0)
+    h2 = Holding("IONQ", 1, 100, "spec"); h2.set_market_value(300.0)
+    cfg = {"band_pp": 5, "groups": [
+        {"name": "核心", "tickers": ["VFV.TO"], "pct": 80},
+        {"name": "投机", "tickers": ["IONQ"], "pct": 20},
+    ]}
+    rows = evaluate_ips_drift([h1, h2], cfg)
+    core = next(r for r in rows if r.name == "核心")
+    spec = next(r for r in rows if r.name == "投机")
+    assert abs(core.actual_pct - 70.0) < 0.01
+    assert core.out_of_band            # 70 vs 80 = -10pp > 5pp 带宽
+    assert spec.out_of_band            # 30 vs 20 = +10pp
+    cfg["groups"][0]["pct"] = 72       # 带内
+    rows2 = evaluate_ips_drift([h1, h2], cfg)
+    assert not next(r for r in rows2 if r.name == "核心").out_of_band
+    assert evaluate_ips_drift([h1, h2], None) == []
+
+
 # ---- Item 6: config override (shadow mode) ----
 
 def test_config_override_layering():
