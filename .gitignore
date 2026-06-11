@@ -20,6 +20,7 @@ results/sector_reports/
 configs/portfolio.yaml
 configs/portfolio.*.yaml
 configs/trades.yaml
+configs/IPS*.md
 configs/advisor.shadow.yaml
 # but DO commit the example template (negation must come after the rule above)
 !configs/portfolio.example.yaml

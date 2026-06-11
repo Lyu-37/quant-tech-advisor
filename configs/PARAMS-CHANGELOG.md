@@ -40,3 +40,17 @@
 - IONQ 加仓 lot2 (2.0 股, 价格估算) 入台账; 投机资本 ~415 CAD, 熔断基数对齐。
 - account_equity_cad 800 -> 3000。VFV/QQQX/IONQ 的 cost_basis 为估算值, 待用户提供
   各持仓 all-time return 后校正。
+
+## 2026-06-11 — IPS 激进版定稿 + "挣来的激进"阶梯预注册
+
+- 用户选定激进配置 (configs/IPS-2026-06.md, gitignored): VFV 47 / QQQX 13 / XEF 15 /
+  XIC+VDY 5 / HEQL(1.25x) 10 / 投机桶 10, 有效股票敞口 ~102.5%, 最坏回撤预算 -55%。
+- **预注册升级阶梯**: 投机桶 cap 基线 10%; 周报 N>=30 且 建仓 bucket 20d 超额 > 0
+  连续两个完整季度 -> cap +5pp (10->15->20, 封顶 25%); 连续两季 <=0 -> 系统降级
+  仅状态描述 + cap 回 10% + 熔断冷却翻倍。杠杆 sleeve 固定 10% 不参与阶梯。
+- 永不清单入册: 3x 日重置不作持仓 / 投机超 cap 不补 / 不卖核心补投机 /
+  TFSA 不开投机新仓 / 期权暂禁。
+- sizing.max_position_cad 60 -> 300: 组合从 ~$3k 扩到 ~$13k, 投机桶 ~$1,300,
+  3-5 票篮子单票上限相应放大。机械随账户规模缩放, 非信号阈值, 不需 shadow。
+- watchlist 整体替换为 IPS 部署目标 (VFV/XEF/QQQX/HEQL 回踩位)。
+- breaker.speculation_budget_cad 暂保持 415, 非注册投机账户注资 $900 落地后改 1300。

@@ -485,8 +485,9 @@ def main():
     levels_md = render_levels_block(action_levels)
     pmetrics_md = render_portfolio_metrics(pmetrics)
     themes_md = render_themes_block(themes)
+    spec_budget = float(adv_config.get("breaker.speculation_budget_cad", 150.0))
     recs_md = render_recommendations_block_markdown(recommendations,
-                                                    speculation_budget=150.0)
+                                                    speculation_budget=spec_budget)
 
     # Compose final report. Recommendations go FIRST (most actionable),
     # then context (sectors/news/levels), then portfolio Greeks at the end.
@@ -518,7 +519,7 @@ def main():
         action_levels=action_levels,
         themes=themes,
         recommendations=recommendations,
-        speculation_budget=150.0,
+        speculation_budget=spec_budget,
         diff=diff,
         portfolio_pnl=portfolio_pnl,
         market_movers=market_movers,
