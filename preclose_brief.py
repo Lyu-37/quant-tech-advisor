@@ -85,7 +85,14 @@ def build_preclose_embed(run_date, data, regime, rs_leaders,
             "inline": False,
         })
 
-    # 3. Guru consensus — what the masters love right now
+    # 3. No-ticker event calendar — IPO/FOMC/expiry within the next few days
+    from src.advisor.market_events import load_market_events, render_events_field
+    ev_field = render_events_field(load_market_events(), run_date,
+                                   within_days=5, limit=4)
+    if ev_field:
+        fields.append(ev_field)
+
+    # 4. Guru consensus — what the masters love right now
     guru_field = render_guru_field(guru_map, top_n=8)
     if guru_field:
         fields.append(guru_field)

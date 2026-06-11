@@ -241,6 +241,17 @@ def main():
     )
     print(f"      -> {len(earnings_events)} upcoming earnings")
 
+    # ------- no-ticker event calendar (IPO / FOMC / expiry / holiday) -------
+    from src.advisor.market_events import (
+        load_market_events, upcoming_events, render_events_field,
+    )
+    mkt_events = load_market_events()
+    near_events = upcoming_events(mkt_events, as_of, within_days=1)
+    for e in near_events:
+        print(f"      [事件] {'今天' if (e.date - as_of).days == 0 else '明天'}: "
+              f"{e.name}")
+    market_events_field = render_events_field(mkt_events, as_of)
+
     # ------- action levels: compute for ALL hot tech (cheap, ~ms each) -------
     # Previously a hardcoded LEVELS_FOCUS list missed Mag 7 / ETFs which then
     # showed empty target prices in Top 3 cards. Now compute for everything.
@@ -542,6 +553,7 @@ def main():
         freshness_warning_text=fresh_warn,
         fetch_note=fetch_note,
         buy_suppression=buy_suppression,
+        market_events_field=market_events_field,
     )
 
     if args.no_discord:

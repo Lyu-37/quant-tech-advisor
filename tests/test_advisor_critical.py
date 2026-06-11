@@ -484,6 +484,27 @@ def test_size_position_inverse_to_stop_width():
         assert size_position(12.0, 0.1, "观望") is None
 
 
+# ---- 无代码事件日历 ----
+
+def test_market_events_window_and_markers():
+    from src.advisor.market_events import (
+        MarketEvent, upcoming_events, render_events_field,
+    )
+    evs = [
+        MarketEvent(date(2026, 6, 12), "SpaceX IPO (SPCX)", "ipo", "首日不买"),
+        MarketEvent(date(2026, 6, 17), "FOMC 决议", "macro"),
+        MarketEvent(date(2026, 9, 16), "FOMC 决议", "macro"),   # 窗口外
+    ]
+    up = upcoming_events(evs, date(2026, 6, 11), within_days=14)
+    assert len(up) == 2
+    field = render_events_field(evs, date(2026, 6, 11))
+    assert "明天" in field["value"] and "SpaceX" in field["value"]
+    assert "9 月" not in field["value"]
+    # 已过去的事件不出现
+    up2 = upcoming_events(evs, date(2026, 6, 13), within_days=14)
+    assert all(e.date >= date(2026, 6, 13) for e in up2)
+
+
 # ---- IPS drift monitor ----
 
 def test_ips_drift_detection():

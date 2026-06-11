@@ -189,6 +189,7 @@ def build_scanner_embed(
     freshness_warning_text: str | None = None,
     fetch_note: str = "",
     buy_suppression: str | None = None,
+    market_events_field: dict | None = None,
 ) -> dict:
     """Return kwargs dict ready for discord_push.send_embed.
 
@@ -500,6 +501,10 @@ def build_scanner_embed(
             "value": compact_news,
             "inline": False,
         })
+
+    # No-ticker event calendar (IPO / FOMC / expiry / holidays)
+    if market_events_field:
+        fields.append(market_events_field)
 
     # Upcoming earnings — show urgency markers, not code-block table (cleaner)
     if earnings_events:

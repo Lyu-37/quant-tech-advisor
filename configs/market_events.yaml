@@ -1,0 +1,60 @@
+# 市场事件日历 — earnings 之外的"无代码事件" (IPO / FOMC / 休市 / 到期 / 指数重组).
+# 系统每天渲染未来 14 天窗口进 Discord; 今天/明天的事件加显著标记.
+# 手工维护: 知道新事件就加一行 (date, name, kind, note).
+# kind: ipo / macro / holiday / expiry / index / other
+
+events:
+  - date: 2026-06-12
+    name: "SpaceX IPO 首日交易 (SPCX, Nasdaq)"
+    kind: ipo
+    note: "史上最大 IPO: $135/股 募 $75B 估值 $1.75T; 流动性吸收日, 太空主题
+      (RKLB/ASTS) 波动放大; IPS 规则: IPO 首日不买"
+
+  - date: 2026-06-16
+    name: "FOMC 会议 (至 06-17)"
+    kind: macro
+  - date: 2026-06-17
+    name: "FOMC 利率决议 + 记者会 (14:00 ET)"
+    kind: macro
+    note: "高波动窗口 — 新仓等决议落地"
+
+  - date: 2026-06-18
+    name: "六月期权/期货到期 (假期提前至周四)"
+    kind: expiry
+    note: "三重到期; 周五 Juneteenth 休市, 到期前移, 成交量异常大"
+  - date: 2026-06-19
+    name: "Juneteenth — 美股休市"
+    kind: holiday
+    note: "系统自动跳过当日简报"
+
+  - date: 2026-07-28
+    name: "FOMC 会议 (至 07-29)"
+    kind: macro
+  - date: 2026-07-29
+    name: "FOMC 利率决议"
+    kind: macro
+  - date: 2026-09-15
+    name: "FOMC 会议 (至 09-16)"
+    kind: macro
+  - date: 2026-09-16
+    name: "FOMC 利率决议"
+    kind: macro
+  - date: 2026-09-18
+    name: "九月四重到期日 (quad witching)"
+    kind: expiry
+  - date: 2026-10-27
+    name: "FOMC 会议 (至 10-28)"
+    kind: macro
+  - date: 2026-10-28
+    name: "FOMC 利率决议"
+    kind: macro
+  - date: 2026-12-08
+    name: "FOMC 会议 (至 12-09)"
+    kind: macro
+  - date: 2026-12-09
+    name: "FOMC 利率决议"
+    kind: macro
+  - date: 2026-12-18
+    name: "纳指100 年度重组生效(约) + 十二月四重到期"
+    kind: index
+    note: "SPCX 若市值达标可能纳入 — QQQX 持有人届时自动获得敞口, 无需买 IPO"
