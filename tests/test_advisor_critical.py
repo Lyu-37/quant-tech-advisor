@@ -463,21 +463,25 @@ DEEP_VALUE_INFO = {
 
 def test_size_position_inverse_to_stop_width():
     from src.advisor.recommendations import size_position
-    tight = size_position(12.0, 0.08, "建仓")    # 8% 止损 -> 150 -> cap 60
-    wide = size_position(12.0, 0.40, "建仓")     # 40% 止损 -> 30
-    assert tight == 60.0
-    assert wide == 30.0
-    assert wide < tight, "止损越宽仓位必须越小 (风险恒定)"
-    # 层级折扣: 试探建仓只拿 0.4 倍
-    probe = size_position(12.0, 0.40, "试探建仓")
-    assert probe < wide
-    # 摩擦下限: 算出来低于 $15 也按 $15 (或者干脆别交易)
-    tiny = size_position(12.0, 0.40, "试探建仓")
-    assert tiny >= 15.0
-    # 不可用输入 -> None (调用方回退固定表)
-    assert size_position(None, 0.1, "建仓") is None
-    assert size_position(12.0, 0.005, "建仓") is None   # 止损距离退化
-    assert size_position(12.0, 0.1, "观望") is None
+    from src.advisor import config
+    # 测试钉住自己的参数, 不依赖 advisor.yaml 的实际 cap
+    with config.override({"sizing": {"max_position_cad": 60,
+                                     "min_position_cad": 15}}):
+        tight = size_position(12.0, 0.08, "建仓")    # 8% 止损 -> 150 -> cap 60
+        wide = size_position(12.0, 0.40, "建仓")     # 40% 止损 -> 30
+        assert tight == 60.0
+        assert wide == 30.0
+        assert wide < tight, "止损越宽仓位必须越小 (风险恒定)"
+        # 层级折扣: 试探建仓只拿 0.4 倍
+        probe = size_position(12.0, 0.40, "试探建仓")
+        assert probe < wide
+        # 摩擦下限: 算出来低于 $15 也按 $15 (或者干脆别交易)
+        tiny = size_position(12.0, 0.40, "试探建仓")
+        assert tiny >= 15.0
+        # 不可用输入 -> None (调用方回退固定表)
+        assert size_position(None, 0.1, "建仓") is None
+        assert size_position(12.0, 0.005, "建仓") is None   # 止损距离退化
+        assert size_position(12.0, 0.1, "观望") is None
 
 
 # ---- Item 6: config override (shadow mode) ----
